@@ -3,12 +3,99 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Token Radar: pre-token protocols ranked by implied value</title>
+<title>Token Radar — pre-token protocols ranked by implied value</title>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<a class="skip" href="#board">Skip to the board</a>
-<main id="board" tabindex="-1" aria-busy="true"></main>
+<noscript><p class="noscript">Token Radar needs JavaScript: the board, its filters and every detail view are rendered in the page from the snapshot data.</p></noscript>
+<div class="shell">
+  <header class="top">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"></span>
+      <span class="brand-name">TOKEN RADAR</span>
+      <span class="tag" id="model-tag">radar-2</span>
+    </div>
+    <div class="top-meta">
+      <span id="meta-snapshot">Snapshot —</span>
+      <span>DefiLlama protocol index</span>
+      <span id="meta-count">— protocols</span>
+    </div>
+  </header>
+
+  <section class="lede">
+    <div>
+      <h1 id="headline">Pre-token protocols, ranked by what a launch would be worth</h1>
+      <p id="lede-text">The watchlist is the floor: every protocol with at least $50M of TVL and no token on record. The early radar adds every other pre-token protocol the snapshot's own fields keep, below the floor and above it. Implied value is a model, not a promise.</p>
+      <div class="kpis" id="kpis"></div>
+    </div>
+    <div class="facts" id="facts"></div>
+  </section>
+
+  <div class="controls" role="search">
+    <div class="field">
+      <label for="q">Search</label>
+      <input type="search" id="q" placeholder="Name, slug, category or chain" aria-label="Search the board">
+    </div>
+    <div class="field">
+      <label for="category">Category</label>
+      <select id="category" aria-label="Filter by category"></select>
+    </div>
+    <div class="field">
+      <label for="chain">Chain</label>
+      <select id="chain" aria-label="Filter by chain"></select>
+    </div>
+    <div class="field">
+      <label for="min-tvl">Min TVL</label>
+      <select id="min-tvl" aria-label="Filter by minimum TVL">
+        <option value="0">Any TVL</option>
+        <option value="25000000">$25M and up</option>
+        <option value="50000000">$50M and up</option>
+        <option value="100000000">$100M and up</option>
+        <option value="500000000">$500M and up</option>
+        <option value="1000000000">$1B and up</option>
+      </select>
+    </div>
+    <div class="field">
+      <span class="sub" id="tab-label">Token status</span>
+      <div class="tabs" role="group" aria-labelledby="tab-label">
+        <button type="button" id="tab-pre" aria-pressed="true">Pre-token</button>
+        <button type="button" id="tab-live" aria-pressed="false">Live token</button>
+      </div>
+    </div>
+    <span class="count" id="count" aria-live="polite"></span>
+  </div>
+
+  <div class="panel">
+    <div class="table-wrap">
+      <table id="board-table">
+        <caption class="sub">Pre-token protocols, strongest implied value first. Select a row for its model breakdown and farm plan.</caption>
+        <thead id="board-head"></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel empty" id="empty" hidden>
+    <h2>No protocol matches that filter</h2>
+    <p>Clear the search or pick another category, chain or TVL to see the board again.</p>
+    <button class="button primary" type="button" id="clear-filters">Clear filters</button>
+  </div>
+
+  <section class="panel model" id="model-panel" aria-labelledby="model-title">
+    <h2 id="model-title">How implied value is computed</h2>
+    <p class="sub">One function scores every protocol, from the snapshot's own figures. No protocol name is special-cased, and no row is hand-picked.</p>
+    <div class="formula" id="formula"></div>
+    <div class="model-grid" id="model-grid"></div>
+    <p class="sub" id="model-note"></p>
+  </section>
+
+  <footer class="foot">
+    <p>Implied value is this entry's own claim, never make.fun's. A protocol "records no token" when DefiLlama's record carries no token for it — that is the record, not proof it has none. Source: the sealed DefiLlama snapshot; the board is rebuilt from it by one program, and the page recomputes every row from the same model.</p>
+  </footer>
+</div>
+
+<dialog class="detail" id="detail" aria-labelledby="detail-title"></dialog>
+
 <script src="../data.js"></script>
 <script src="app.js"></script>
 </body>
