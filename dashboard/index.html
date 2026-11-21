@@ -13,7 +13,7 @@
     <div class="brand">
       <span class="mark" aria-hidden="true"></span>
       <span class="brand-name">TOKEN RADAR</span>
-      <span class="tag" id="model-tag">radar-2</span>
+      <span class="tag" id="model-tag">radar-3</span>
     </div>
     <div class="top-meta">
       <span id="meta-snapshot">Snapshot —</span>
@@ -25,10 +25,16 @@
   <section class="lede">
     <div>
       <h1 id="headline">Pre-token protocols, ranked by what a launch would be worth</h1>
-      <p id="lede-text">The watchlist is the floor: every protocol with at least $50M of TVL and no token on record. The early radar adds every other pre-token protocol the snapshot's own fields keep, below the floor and above it. Implied value is a model, not a promise.</p>
+      <p id="lede-text">The watchlist is the floor: every protocol with at least $50M of TVL and no token on record. The early radar adds every other pre-token protocol the snapshot's own fields keep, below the floor and above it. Implied value is a fitted model, not a promise — and the board shows the fit's own tests.</p>
       <div class="kpis" id="kpis"></div>
     </div>
     <div class="facts" id="facts"></div>
+  </section>
+
+  <section class="strips" aria-label="Evidence, integrity and accounting">
+    <div class="strip" id="evidence-line"></div>
+    <div class="strip" id="integrity-line"></div>
+    <div class="strip" id="accounting-line"></div>
   </section>
 
   <div class="controls" role="search">
@@ -53,6 +59,15 @@
         <option value="100000000">$100M and up</option>
         <option value="500000000">$500M and up</option>
         <option value="1000000000">$1B and up</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="verdict">Verdict</label>
+      <select id="verdict" aria-label="Filter by farm verdict">
+        <option value="all">Any verdict</option>
+        <option value="Farm">Farm</option>
+        <option value="Watch">Watch</option>
+        <option value="Skip">Skip</option>
       </select>
     </div>
     <div class="field">
@@ -83,14 +98,30 @@
 
   <section class="panel model" id="model-panel" aria-labelledby="model-title">
     <h2 id="model-title">How implied value is computed</h2>
-    <p class="sub">One function scores every protocol, from the snapshot's own figures. No protocol name is special-cased, and no row is hand-picked.</p>
+    <p class="sub">One function scores every protocol, from the snapshot's own figures. No protocol name is special-cased, and no row is hand-picked. The coefficients below are fitted from the snapshot's own traded tokens — the program refits them every run — not chosen by hand.</p>
     <div class="formula" id="formula"></div>
     <div class="model-grid" id="model-grid"></div>
+    <h3>What the tests say — one term at a time</h3>
+    <div class="table-wrap slim">
+      <table class="mini" id="terms-table">
+        <caption class="sub">Each term dropped in turn, both tests re-run. A term survives only when dropping it makes both tests worse.</caption>
+        <thead><tr><th scope="col">Term</th><th scope="col">Fitted weight</th><th scope="col">Leave-one-out miss without it</th><th scope="col">Walk-forward miss without it</th><th scope="col">Verdict</th></tr></thead>
+        <tbody id="terms-body"></tbody>
+      </table>
+    </div>
+    <h3>Token odds — the peers' record</h3>
+    <div class="table-wrap slim">
+      <table class="mini" id="odds-table">
+        <caption class="sub">Share of all 758 protocols in each age band that have a token, Laplace smoothed. A peers'-record rate, not a forecast of when a token lands.</caption>
+        <thead><tr><th scope="col">Age band</th><th scope="col">Have a token</th><th scope="col">Protocols</th><th scope="col">Token odds</th></tr></thead>
+        <tbody id="odds-body"></tbody>
+      </table>
+    </div>
     <p class="sub" id="model-note"></p>
   </section>
 
   <footer class="foot">
-    <p>Implied value is this entry's own claim, never make.fun's. A protocol "records no token" when DefiLlama's record carries no token for it — that is the record, not proof it has none. Source: the sealed DefiLlama snapshot; the board is rebuilt from it by one program, and the page recomputes every row from the same model.</p>
+    <p>Implied value is this entry's own claim, never make.fun's. A protocol "records no token" when DefiLlama's record carries no token for it — that is the record, not proof it has none. Token odds are the peers' launch share by age band, not a promise a token will come. Miss is mean absolute error in log10(market cap): 0.70 dex means the typical fitted value sits within a factor of about 5 of a traded token's actual market cap. Source: the sealed DefiLlama snapshot; the board is rebuilt from it by one program, and the page recomputes every row from the same fitted model.</p>
   </footer>
 </div>
 
