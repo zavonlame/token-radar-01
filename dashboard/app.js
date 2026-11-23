@@ -190,7 +190,8 @@
       'R² ' + f.r_squared.toFixed(2) + ' — the fit is noisy and the board says so.';
     var it = DATA.integrity;
     document.getElementById('integrity-line').innerHTML =
-      '<b>Integrity.</b> This table = board.json: ' + it.rows_recomputed + ' of ' + it.rows_recomputed + ' rows recomputed here · totals equal ' + fmtUsd(it.total_implied_usd) + ' · checksum ' + esc(it.checksum) + ' = main.ts · ledger ' + it.ledger_total + ' of ' + it.ledger_total + '.';
+      '<b>Integrity.</b> This table = board.json: ' + it.rows_recomputed + ' of ' + it.rows_recomputed + ' rows recomputed here · totals equal ' + fmtUsd(it.total_implied_usd) + ' · checksum ' + esc(it.checksum) + ' = main.ts · ledger ' + it.ledger_total + ' of ' + it.ledger_total + '.' +
+      ' Held-out miss ' + f.holdout_fitted_mae.toFixed(2) + ' vs hand-set ' + f.holdout_handset_mae.toFixed(2) + ' · walk-forward miss ' + f.walkforward_mae.toFixed(2) + ' vs ' + f.walkforward_handset_mae.toFixed(2) + ' · token-odds Brier ' + DATA.odds.brier.toFixed(3) + ' vs base ' + DATA.odds.base_brier.toFixed(3) + ' · only TVL carries signal: growth, maturity and chains fail the ablation on both tests.';
     var ac = DATA.accounting;
     document.getElementById('accounting-line').innerHTML =
       '<b>Accounting.</b> Ranked ' + DATA.board_size + ' (watchlist ' + ac.watchlist + ' + early ' + ac.early + ') · live-token ' + ac.live_token + ' · pre-token not ranked ' + ac.unranked_pretoken + ' (versioned, wrapped, bridge or exchange) = ' + ac.total + ' protocols.';
@@ -288,6 +289,8 @@
       else if (key === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
       else if (key === 'mcap') { av = a.mcap_usd === null ? -Infinity : a.mcap_usd; bv = b.mcap_usd === null ? -Infinity : b.mcap_usd; }
       else if (key === 'odds') { av = a.token_odds; bv = b.token_odds; }
+      else if (key === 'expected') { av = a.expected_value_usd; bv = b.expected_value_usd; }
+      else if (key === 'cost') { av = a.farm_cost_usd; bv = b.farm_cost_usd; }
       else if (key === 'verdict') { av = verdictRank(a.verdict); bv = verdictRank(b.verdict); }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
       if (av < bv) return -state.dir;
@@ -324,12 +327,14 @@
       tr.appendChild(sortHeader('implied', 'Implied value'));
       tr.appendChild(sortHeader('odds', 'Token odds'));
       tr.appendChild(el('th', { scope: 'col', text: 'P25–P75' }));
+      tr.appendChild(sortHeader('expected', 'Expected'));
+      tr.appendChild(sortHeader('cost', 'Farm cost'));
       tr.appendChild(sortHeader('verdict', 'Verdict'));
     }
     head.appendChild(tr);
     table.querySelector('caption').textContent = state.tab === 'live'
       ? 'Token live: these protocols already trade, so their market cap is a fact, not a model. They are set aside from the pre-token ranking.'
-      : 'Pre-token protocols, strongest implied value first. Select a row for its model breakdown and farm plan.';
+      : 'Pre-token protocols, strongest implied value first. Expected = implied value × token odds × 0.001%; net = expected − farm cost, and the verdict follows the net. Select a row for its model breakdown and farm plan.';
   }
 
   function renderRows() {
@@ -383,6 +388,8 @@
         )),
         el('td', { class: 'num', text: Math.round(r.token_odds * 100) + '%' }),
         el('td', { class: 'num range', text: fmtUsd(r.implied_p25_usd) + '–' + fmtUsd(r.implied_p75_usd) }),
+        el('td', { class: 'num', text: fmtMoney(r.expected_value_usd) }),
+        el('td', { class: 'num', text: fmtMoney(r.farm_cost_usd) }),
         el('td', null, el('div', { class: 'verdict-cell' },
           el('span', { class: 'verdict ' + verdictClass, text: r.verdict.toUpperCase() }),
           el('span', { class: 'sub', text: fmtMoney(r.net_usd) + ' net' })
@@ -426,15 +433,21 @@
       ),
       el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the page recomputes this row as ' + fmtUsd(rec.implied) + (rec.implied === row.implied_value_usd ? ' — the same number board.json carries.' : ' — which differs from the board: the data would be stale.') + ' The range is the fit\u2019s own residual spread (×/÷ ' + DATA.fit.range_factor.toFixed(2) + '). This is an estimate, not a price.' })
     ));
+    var net25 = Math.round((row.implied_p25_usd * row.token_odds * 1e-5 - row.farm_cost_usd) * 100) / 100;
+    var net75 = Math.round((row.implied_p75_usd * row.token_odds * 1e-5 - row.farm_cost_usd) * 100) / 100;
+    var verdict25 = net25 >= 50 ? 'Farm' : net25 >= 0 ? 'Watch' : 'Skip';
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Verdict — net of fees' }),
       el('div', { class: 'equation' },
         el('div', null, el('span', { text: 'Verdict' }), el('b', { class: 'num', text: row.verdict })),
         el('div', null, el('span', { text: 'Farm cost (gas + bridge)' }), el('b', { class: 'num', text: fmtMoney(row.farm_cost_usd) })),
         el('div', null, el('span', { text: 'Net value' }), el('b', { class: 'num', text: fmtMoney(row.net_usd) })),
-        el('div', null, el('span', { text: 'Net per active hour' }), el('b', { class: 'num', text: fmtMoney(row.net_per_hour_usd) }))
+        el('div', null, el('span', { text: 'Net per active hour' }), el('b', { class: 'num', text: fmtMoney(row.net_per_hour_usd) })),
+        el('div', null, el('span', { text: 'Net at P25 (low end of the range)' }), el('b', { class: 'num', text: fmtMoney(net25) })),
+        el('div', null, el('span', { text: 'Net at P75 (high end of the range)' }), el('b', { class: 'num', text: fmtMoney(net75) }))
       ),
-      el('p', { class: 'sub', text: 'Net = implied value × token odds × 0.001% (an assumed farmer\u2019s share of a launch) − farm cost. Farm at $50 or more, Watch at $0 or more, Skip below $0.' })
+      el('p', { class: 'sub', text: 'Net = implied value × token odds × 0.001% (an assumed farmer\u2019s share of a launch) − farm cost. Farm at $50 or more, Watch at $0 or more, Skip below $0.' }),
+      el('p', { class: 'sub', text: 'At P25 the net is ' + fmtMoney(net25) + ' and the verdict would be ' + verdict25 + (verdict25 === row.verdict ? ' — the verdict holds across the range.' : ' — the ' + row.verdict + ' case needs the point estimate, not the low end.') })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan — 8 steps' }),
@@ -488,7 +501,7 @@
   }
 
   function render() {
-    if (state.tab === 'live' && (state.sort === 'implied' || state.sort === 'odds' || state.sort === 'verdict')) state.sort = 'mcap';
+    if (state.tab === 'live' && (state.sort === 'implied' || state.sort === 'odds' || state.sort === 'expected' || state.sort === 'cost' || state.sort === 'verdict')) state.sort = 'mcap';
     if (state.tab === 'pre-token' && state.sort === 'mcap') state.sort = 'implied';
     document.getElementById('tab-pre').setAttribute('aria-pressed', state.tab === 'pre-token' ? 'true' : 'false');
     document.getElementById('tab-live').setAttribute('aria-pressed', state.tab === 'live' ? 'true' : 'false');
