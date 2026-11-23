@@ -1,43 +1,56 @@
-// The token radar's model, radar-3: the value model is fitted, not asserted.
+// The token radar's model, radar-4: the value model is fitted, not asserted, and the
+// odds model is fitted too.
 //
-// Round 1 (radar-2) scored every protocol with hand-set multipliers — base = TVL^0.85 times a
-// growth multiplier, a maturity hump and a chain multiplier, every constant chosen by hand. It
-// worked, but nothing in it was ever tested against the snapshot's own traded tokens. Radar-3
-// fits the model from those tokens instead, and shows the tests on the board.
+// Round 3 (radar-3) fitted the value model from the snapshot's traded tokens and showed
+// the tests on the board, but its token odds were still age bands — the peers' launch
+// share by age band, Laplace smoothed. Radar-4 fits the odds as well, and simplifies
+// the value model to what the tests actually support. Every change below was tested
+// offline on the same sealed snapshot before it was built in, and the board prints the
+// test numbers — including the ones that failed.
 //
-//   The fit    log10(market cap) is regressed on the snapshot's own figures — log10(TVL), the
-//              saturating seven-day growth term, the maturity hump, and the chain count — over
-//              the 128 traded protocols that record a market cap above zero. The regression is
-//              ridge-regularised (lambda 10, chosen by leave-one-out error) and solved in the
-//              program itself, every run, from the snapshot it reads: no coefficient is
-//              hand-set, and the same snapshot always fits the same numbers.
-//   The tests   Leave-one-out error and walk-forward error (five folds ordered by listing date,
-//              each fit on the earlier protocols and tested on the later ones) are computed in
-//              the program and printed on the board, beside the hand-set model's error on the
-//              same folds. The hold-out test keeps the last-listed 20% of traded tokens out of
-//              the fit entirely and scores the fitted model against the hand-set one on them.
-//   The verdict The ablation drops each term in turn and re-runs both tests: a term survives
-//              only when dropping it makes both tests worse. TVL survives both. Growth, age
-//              and chains do not — the data says a TVL spike the token has not followed is
-//              mean-reversion, and an old protocol's token is worth less, not more, at the
-//              same TVL — so the fit keeps them at small ridge-shrunk weights and the board
-//              says so, instead of pretending the hand-set story was right.
-//   Token odds A pre-token protocol's odds come from the peers' record: among all 758
-//              protocols in the snapshot, the share that have a token, by age band, Laplace
-//              smoothed. The odds are a peers'-record rate, not a forecast of when a token
-//              lands, and the board labels them as such. Their Brier score is computed
-//              leave-one-out and shown against the base rate's.
+//   The value fit  log10(market cap) is regressed on log10(TVL) alone, over the 128
+//              traded protocols that record a market cap above zero. The regression is
+//              ridge-regularised (lambda 10) and solved in the program itself, every
+//              run, from the snapshot it reads: no coefficient is hand-set. TVL-only
+//              wins all three tests — leave-one-out 0.694, walk-forward 0.700, held-out
+//              0.814 — against the four-term fit's 0.703 / 0.716 / 0.841. Growth,
+//              maturity and chains add nothing once TVL is in: the ablation drops and
+//              adds each term in turn and re-runs all three tests, and nothing beats
+//              TVL alone. Two shuffled-growth placebos behave exactly like no signal,
+//              which is what a working test setup should show.
+//   The odds fit  A pre-token protocol's odds come from a logistic ridge on its own
+//              figures — log-age, an unknown-age flag, log10 TVL, growth, chain count,
+//              and its category — fitted on all 758 protocols (lambda 10, features
+//              standardised, intercept unpenalised). Leave-one-out Brier 0.196 against
+//              0.212 for age bands and 0.248 for the base rate. The board says the
+//              honest part too: the walk-forward win is thin (0.233 vs 0.238 on five
+//              folds) and coarser time splits lose (four folds 0.273 vs 0.245, three
+//              folds 0.274 vs 0.258) — the category signal needs a large training set,
+//              and the deployment fit uses all 758 rows, where it wins.
 //   The range  The P25-P75 range is the fit's own residual spread: implied value times or
 //              divided by 10^(0.674 x sigma), sigma the residual standard deviation of the
-//              fit on the traded tokens.
+//              fit on the traded tokens. The board prints the tested coverage: 53.7% of
+//              later-listed caps inside P25-P75 and 81.1% inside P10-P90 on leave-one-out
+//              (stated 50% / 80%), so the range is honest to within a few points.
+//   The ranks  The board's order is the TVL order: with one fitted term, implied value
+//              is a monotone function of TVL, so a bootstrap re-ranking cannot move a
+//              row — the uncertainty lives in the values, not the ranks, and the board
+//              says so instead of printing a range that never moves. What the bootstrap
+//              does measure is the coefficients' own spread: 200 refits on resampled
+//              traded tokens give the intercept and the TVL slope with standard errors
+//              and 95% intervals, printed beside the formula.
 //   The verdict A farmer is assumed to capture 0.001% of a launch's value. Net = implied value
 //              x token odds x 0.001% - farm cost (gas and bridge from the same tables the farm
 //              plans use). Farm when net is at least $50, Watch when it is at least $0,
-//              Skip when it is below $0. Net/hour divides by the plan's active time.
+//              Skip when it is below $0. Net/hour divides by the plan's active time. The
+//              board also shows, per row, the net per hour after a 5%-a-year capital charge
+//              over the hold, and the break-even token odds — the odds at which the farm
+//              pays for itself — so a row can be judged on its own economics, not only on
+//              the verdict.
 //
-// Implied value follows only from the snapshot's own figures — TVL, seven-day growth, age with
-// no token, and how many chains the protocol runs on — through one function that scores every
-// row the same way. No protocol name is ever special-cased.
+// Implied value follows only from the snapshot's own figures — TVL for the fit, and age,
+// growth and chains for the odds — through one function that scores every row the same
+// way. No protocol name is ever special-cased.
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -68,7 +81,7 @@ export interface Snapshot {
 }
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-4';
 
 /** The ridge penalty for the value fit, chosen by leave-one-out error. */
 export const RIDGE_LAMBDA = 10;
@@ -94,13 +107,34 @@ export interface FarmStep {
   time: string;
 }
 
-/** One fitted term, with what the two tests say about it. */
-export interface FitTerm {
-  term: string;
-  weight: number;
-  loo_without: number;
-  walkforward_without: number;
+/** One ablation variant: the same three tests re-run, against the deployed model. */
+export interface AblationRow {
+  variant: string;
+  loo: number;
+  walkforward: number;
+  holdout: number;
   verdict: string;
+}
+
+/** The range's tested coverage: share of later-listed caps inside the printed bands. */
+export interface CoverageReport {
+  loo_p50: number;
+  loo_p80: number;
+  walkforward_p50: number;
+  walkforward_p80: number;
+  holdout_p50: number;
+  holdout_p80: number;
+  n_dated: number;
+  n_holdout: number;
+}
+
+/** The bootstrap: 200 refits on resampled traded tokens, for the coefficients' spread. */
+export interface BootstrapReport {
+  n: number;
+  coef_mean: number[];
+  coef_se: number[];
+  coef_ci_lo: number[];
+  coef_ci_hi: number[];
 }
 
 /** The value fit's own report, computed from the snapshot every run. */
@@ -120,15 +154,39 @@ export interface FitReport {
   holdout_fitted_mae: number;
   holdout_handset_mae: number;
   holdout_improvement_pct: number;
-  terms: FitTerm[];
+  ablation: AblationRow[];
+  coverage: CoverageReport;
+  bootstrap: BootstrapReport;
 }
 
-/** The token-odds report: the peers' launch record, by age band. */
+/** One fitted odds term, with its standardised weight in log-odds per standard deviation. */
+export interface OddsTerm {
+  term: string;
+  weight: number;
+}
+
+/** The fitted token-odds model: logistic ridge on the protocol's own figures. */
+export interface OddsMulti {
+  lambda: number;
+  categories: string[];
+  coefficients: OddsTerm[];
+  loo_brier: number;
+  walkforward_brier: number;
+  walkforward4_brier: number;
+  walkforward3_brier: number;
+  age_walkforward_brier: number;
+  age_walkforward4_brier: number;
+  age_walkforward3_brier: number;
+  model: { beta: number[]; mu: number[]; sd: number[] };
+}
+
+/** The token-odds report: the peers' launch record, by age band, plus the fitted model. */
 export interface OddsReport {
   base_rate: number;
   brier: number;
   base_brier: number;
   bands: { band: string; launched: number; total: number; odds: number }[];
+  multi: OddsMulti;
 }
 
 /** Where every one of the snapshot's protocols sits: the ledger must sum to the total. */
@@ -172,6 +230,9 @@ export interface BoardRow {
   net_usd: number;
   net_per_hour_usd: number;
   farm_cost_usd: number;
+  capital_charge_usd: number;
+  net_per_hour_cc_usd: number;
+  breakeven_odds: number;
   model: {
     log_implied: number;
     growth_term: number;
@@ -203,6 +264,9 @@ export interface RadarRow {
   net_usd: number;
   net_per_hour_usd: number;
   farm_cost_usd: number;
+  capital_charge_usd: number;
+  net_per_hour_cc_usd: number;
+  breakeven_odds: number;
   log_implied: number;
   growth_term: number;
   maturity_term: number;
@@ -295,6 +359,118 @@ function features(p: SnapshotProtocol, asOf: string): number[] {
   return [1, Math.log10(Math.max(1, p.tvl_usd)), growthTerm(p.change_7d), maturityTerm(ageDays(asOf, p.listed_at)), chainTerm(p.chains)];
 }
 
+/** The deployed value fit's feature row: [1, log10 TVL] — TVL alone. */
+function valueFeatures(p: SnapshotProtocol): number[] {
+  return [1, Math.log10(Math.max(1, p.tvl_usd))];
+}
+
+/** Categories with at least five traded tokens: the ablation's category block. */
+function topCategories(traded: SnapshotProtocol[]): string[] {
+  const counts = new Map<string, number>();
+  for (const p of traded) if (p.category !== null) counts.set(p.category, (counts.get(p.category) ?? 0) + 1);
+  return [...counts.entries()].filter(([, n]) => n >= 5).map(([c]) => c).sort();
+}
+
+/** The category families the ablation groups: eight named families, the rest 'Other'. */
+const FAMILY_OF: Record<string, string> = {};
+for (const c of ['Dexs']) FAMILY_OF[c] = 'DEX';
+for (const c of ['Lending', 'CDP', 'Lending & Borrowing', 'Leveraged Farming']) FAMILY_OF[c] = 'Lending';
+for (const c of ['Liquid Staking', 'Liquid Restaking', 'Restaked BTC', 'Staking']) FAMILY_OF[c] = 'Staking';
+for (const c of ['Bridge', 'Canonical Bridge', 'Cross Chain Bridge']) FAMILY_OF[c] = 'Bridge';
+for (const c of ['Yield', 'Yield Aggregator']) FAMILY_OF[c] = 'Yield';
+for (const c of ['Derivatives', 'Perps', 'Options']) FAMILY_OF[c] = 'Derivatives';
+for (const c of ['RWA']) FAMILY_OF[c] = 'RWA';
+for (const c of ['CEX']) FAMILY_OF[c] = 'CEX';
+function familyOf(p: SnapshotProtocol): string {
+  return p.category !== null && FAMILY_OF[p.category] !== undefined ? FAMILY_OF[p.category]! : 'Other';
+}
+
+/** A small deterministic PRNG (mulberry32), so the bootstrap and the placebo are reproducible. */
+function mulberry32(seed: number): () => number {
+  let a = seed;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** The indices 0..n-1 shuffled by the seeded PRNG. */
+function shuffledIndices(n: number, seed: number): number[] {
+  const rand = mulberry32(seed);
+  const idx = [...Array(n).keys()];
+  for (let i = n - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    const tmp = idx[i]!;
+    idx[i] = idx[j]!;
+    idx[j] = tmp;
+  }
+  return idx;
+}
+
+/** n indices drawn with replacement by the seeded PRNG: a bootstrap resample. */
+function resampleIndices(n: number, seed: number): number[] {
+  const rand = mulberry32(seed);
+  const idx: number[] = [];
+  for (let i = 0; i < n; i++) idx.push(Math.floor(rand() * n));
+  return idx;
+}
+
+/**
+ * One protocol's extended feature row for the ablation: the five base columns, then
+ * the candidates — size curve, momentum, log-age, chains squared, category one-hots,
+ * family one-hots, and two shuffled-growth placebos. The placebo columns shuffle
+ * growth across the list the row belongs to, so they carry no signal by construction.
+ */
+function extFeatures(
+  p: SnapshotProtocol,
+  list: SnapshotProtocol[],
+  i: number,
+  perm: number[],
+  asOf: string,
+  meanLogTvl: number,
+  cats: string[],
+  fams: string[],
+): number[] {
+  const base = features(p, asOf);
+  const logTvl = base[1]!;
+  const age = ageDays(asOf, p.listed_at);
+  const momentum = typeof p.change_7d === 'number' && Number.isFinite(p.change_7d) ? p.change_7d / 100 : 0;
+  return [
+    ...base,
+    (logTvl - meanLogTvl) ** 2,
+    momentum,
+    Math.log10((age === null ? 365 : age) + 1),
+    base[4]! ** 2,
+    ...cats.map((c) => (p.category === c ? 1 : 0)),
+    ...fams.map((f) => (familyOf(p) === f ? 1 : 0)),
+    growthTerm(list[perm[i]!]!.change_7d),
+    growthTerm(list[(i - 1 + list.length) % list.length]!.change_7d),
+  ];
+}
+
+/** A general linear solve by Gauss-Jordan with partial pivoting. */
+function solveLinear(aIn: number[][], bIn: number[]): number[] {
+  const k = bIn.length;
+  const m: number[][] = aIn.map((row, i) => [...row, bIn[i]!]);
+  for (let col = 0; col < k; col++) {
+    let piv = col;
+    for (let r = col + 1; r < k; r++) if (Math.abs(m[r]![col]!) > Math.abs(m[piv]![col]!)) piv = r;
+    const tmp = m[col]!;
+    m[col] = m[piv]!;
+    m[piv] = tmp;
+    const d = m[col]![col]!;
+    for (let r = 0; r < k; r++) {
+      if (r === col) continue;
+      const f = m[r]![col]! / d;
+      for (let c = col; c <= k; c++) m[r]![c]! -= f * m[col]![c]!;
+    }
+  }
+  return m.map((row, i) => row[k]! / row[i]!);
+}
+
 /** The ridge solution of (X'X + lambda I) beta = X'y, intercept unpenalised, by Gauss-Jordan with partial pivoting. */
 function ridgeSolve(x: number[][], y: number[], lambda: number): number[] {
   const k = x[0]!.length;
@@ -339,37 +515,73 @@ function mae(beta: number[], rows: { x: number[]; y: number }[]): number {
   return rows.length === 0 ? 0 : s / rows.length;
 }
 
-/** Leave-one-out mean absolute error: each protocol predicted by a fit on all the others. */
-function looMae(rows: { x: number[]; y: number }[], lambda: number, drop: number): number {
-  const use = (r: { x: number[]; y: number }): number[] => (drop < 0 ? r.x : r.x.filter((_, i) => i !== drop));
-  let s = 0;
-  for (let i = 0; i < rows.length; i++) {
-    const train = rows.filter((_, j) => j !== i).map((r) => ({ x: use(r), y: r.y }));
-    const beta = ridgeSolve(train.map((t) => t.x), train.map((t) => t.y), lambda);
-    s += Math.abs(predict(beta, use(rows[i]!)) - rows[i]!.y);
-  }
-  return rows.length === 0 ? 0 : s / rows.length;
+/** A row restricted to the chosen columns. */
+function useCols(x: number[], cols: number[]): number[] {
+  return cols.map((c) => x[c]!);
 }
 
-/** Walk-forward mean absolute error: five folds ordered by listing date, each fit on the earlier folds and tested on the next. */
-function walkForwardMae(dated: { x: number[]; y: number }[], lambda: number, drop: number, handSet: (p: SnapshotProtocol) => number, datedProtocols: SnapshotProtocol[]): { fitted: number; handset: number } {
-  const use = (r: { x: number[]; y: number }): number[] => (drop < 0 ? r.x : r.x.filter((_, i) => i !== drop));
-  const fold = Math.floor(dated.length / 5);
-  let sf = 0;
-  let sh = 0;
+/** Leave-one-out mean absolute error on the chosen columns: each protocol predicted by a fit on all the others. */
+function looMaeCols(X: number[][], y: number[], cols: number[], lambda: number): number {
+  let s = 0;
+  for (let i = 0; i < y.length; i++) {
+    const trainX: number[][] = [];
+    const trainY: number[] = [];
+    for (let j = 0; j < y.length; j++) {
+      if (j === i) continue;
+      trainX.push(useCols(X[j]!, cols));
+      trainY.push(y[j]!);
+    }
+    const beta = ridgeSolve(trainX, trainY, lambda);
+    s += Math.abs(predict(beta, useCols(X[i]!, cols)) - y[i]!);
+  }
+  return y.length === 0 ? 0 : s / y.length;
+}
+
+/** Walk-forward mean absolute error on the chosen columns: five folds ordered by listing date, each fit on the earlier folds and tested on the next. */
+function walkForwardMaeCols(X: number[][], y: number[], cols: number[], lambda: number): number {
+  const fold = Math.floor(y.length / 5);
+  let s = 0;
   let n = 0;
   for (let f = 1; f < 5; f++) {
-    const train = dated.slice(0, f * fold);
-    const test = dated.slice(f * fold, (f + 1) * fold);
-    const testP = datedProtocols.slice(f * fold, (f + 1) * fold);
-    const beta = ridgeSolve(train.map((t) => use(t)), train.map((t) => t.y), lambda);
-    for (let i = 0; i < test.length; i++) {
-      sf += Math.abs(predict(beta, use(test[i]!)) - test[i]!.y);
-      sh += Math.abs(Math.log10(handSet(testP[i]!)) - test[i]!.y);
+    const beta = ridgeSolve(
+      X.slice(0, f * fold).map((r) => useCols(r, cols)),
+      y.slice(0, f * fold),
+      lambda,
+    );
+    for (let i = f * fold; i < Math.min((f + 1) * fold, y.length); i++) {
+      s += Math.abs(predict(beta, useCols(X[i]!, cols)) - y[i]!);
       n++;
     }
   }
-  return { fitted: n === 0 ? 0 : sf / n, handset: n === 0 ? 0 : sh / n };
+  return n === 0 ? 0 : s / n;
+}
+
+/** Walk-forward error of the hand-set model on the same folds, for the same dated rows. */
+function walkForwardHandsetMae(datedProtocols: SnapshotProtocol[], y: number[], asOf: string): number {
+  const fold = Math.floor(y.length / 5);
+  let s = 0;
+  let n = 0;
+  for (let f = 1; f < 5; f++) {
+    for (let i = f * fold; i < Math.min((f + 1) * fold, y.length); i++) {
+      s += Math.abs(Math.log10(handSetValue(datedProtocols[i]!, asOf)) - y[i]!);
+      n++;
+    }
+  }
+  return n === 0 ? 0 : s / n;
+}
+
+/** Hold-out mean absolute error on the chosen columns: the last-listed 20% never enter the fit. */
+function holdoutMaeCols(X: number[][], y: number[], cols: number[], lambda: number): { fitted: number; n: number } {
+  const cut = Math.floor(y.length * 0.8);
+  const beta = ridgeSolve(
+    X.slice(0, cut).map((r) => useCols(r, cols)),
+    y.slice(0, cut),
+    lambda,
+  );
+  let s = 0;
+  for (let i = cut; i < y.length; i++) s += Math.abs(predict(beta, useCols(X[i]!, cols)) - y[i]!);
+  const n = y.length - cut;
+  return { fitted: n === 0 ? 0 : s / n, n };
 }
 
 /** Round 1's hand-set model, kept as the benchmark the fitted model must beat. */
@@ -382,46 +594,186 @@ export function handSetValue(p: SnapshotProtocol, asOf: string): number {
   return Math.max(1, Math.round(base * growthMult * maturityMult * chainMult));
 }
 
+/** A percentile of a sorted array, by linear interpolation. */
+function percentile(sorted: number[], q: number): number {
+  if (sorted.length === 0) return 0;
+  const pos = q * (sorted.length - 1);
+  const lo = Math.floor(pos);
+  const hi = Math.min(sorted.length - 1, Math.ceil(pos));
+  return sorted[lo]! + (sorted[hi]! - sorted[lo]!) * (pos - lo);
+}
+
+/** The range's tested coverage on the deployed columns: LOO, walk-forward and hold-out shares inside the printed bands. */
+function coverageReport(Xd: number[][], yd: number[], cols: number[], lambda: number): CoverageReport {
+  const check = (pred: number, actual: number, sigma: number): [boolean, boolean] => [
+    Math.abs(actual - pred) <= 0.674 * sigma,
+    Math.abs(actual - pred) <= 1.282 * sigma,
+  ];
+  let l50 = 0;
+  let l80 = 0;
+  for (let i = 0; i < yd.length; i++) {
+    const Xt: number[][] = [];
+    const yt: number[] = [];
+    for (let j = 0; j < yd.length; j++) {
+      if (j === i) continue;
+      Xt.push(useCols(Xd[j]!, cols));
+      yt.push(yd[j]!);
+    }
+    const beta = ridgeSolve(Xt, yt, lambda);
+    const sig = Math.sqrt(Xt.reduce((s, r, j) => s + (predict(beta, r) - yt[j]!) ** 2, 0) / Math.max(1, Xt.length));
+    const [a, b] = check(predict(beta, useCols(Xd[i]!, cols)), yd[i]!, sig);
+    if (a) l50++;
+    if (b) l80++;
+  }
+  const fold = Math.floor(yd.length / 5);
+  let w50 = 0;
+  let w80 = 0;
+  let wc = 0;
+  for (let f = 1; f < 5; f++) {
+    const trainX = Xd.slice(0, f * fold).map((r) => useCols(r, cols));
+    const trainY = yd.slice(0, f * fold);
+    const beta = ridgeSolve(trainX, trainY, lambda);
+    const sig = Math.sqrt(trainX.reduce((s, r, j) => s + (predict(beta, r) - trainY[j]!) ** 2, 0) / Math.max(1, trainX.length));
+    for (let i = f * fold; i < Math.min((f + 1) * fold, yd.length); i++) {
+      const [a, b] = check(predict(beta, useCols(Xd[i]!, cols)), yd[i]!, sig);
+      if (a) w50++;
+      if (b) w80++;
+      wc++;
+    }
+  }
+  const cut = Math.floor(yd.length * 0.8);
+  const betaH = ridgeSolve(
+    Xd.slice(0, cut).map((r) => useCols(r, cols)),
+    yd.slice(0, cut),
+    lambda,
+  );
+  const sigH = Math.sqrt(
+    Xd.slice(0, cut).reduce((s, r, j) => s + (predict(betaH, useCols(r, cols)) - yd[j]!) ** 2, 0) / Math.max(1, cut),
+  );
+  let h50 = 0;
+  let h80 = 0;
+  for (let i = cut; i < yd.length; i++) {
+    const [a, b] = check(predict(betaH, useCols(Xd[i]!, cols)), yd[i]!, sigH);
+    if (a) h50++;
+    if (b) h80++;
+  }
+  const nHold = yd.length - cut;
+  return {
+    loo_p50: round4(yd.length === 0 ? 0 : l50 / yd.length),
+    loo_p80: round4(yd.length === 0 ? 0 : l80 / yd.length),
+    walkforward_p50: round4(wc === 0 ? 0 : w50 / wc),
+    walkforward_p80: round4(wc === 0 ? 0 : w80 / wc),
+    holdout_p50: round4(nHold === 0 ? 0 : h50 / nHold),
+    holdout_p80: round4(nHold === 0 ? 0 : h80 / nHold),
+    n_dated: yd.length,
+    n_holdout: nHold,
+  };
+}
+
 /** The value fit and its tests, computed from the snapshot's own traded tokens. */
 export function fitModel(snapshot: Snapshot): FitReport {
   const traded = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
-  const rows = traded.map((p) => ({ x: features(p, snapshot.as_of), y: Math.log10(p.mcap_usd!) }));
-  const beta = ridgeSolve(rows.map((r) => r.x), rows.map((r) => r.y), RIDGE_LAMBDA);
-  const residuals = rows.map((r) => predict(beta, r.x) - r.y);
-  const sigma = Math.sqrt(residuals.reduce((s, r) => s + r * r, 0) / Math.max(1, rows.length));
-  const meanY = rows.reduce((s, r) => s + r.y, 0) / Math.max(1, rows.length);
-  const ssTot = rows.reduce((s, r) => s + (r.y - meanY) ** 2, 0);
-  const ssRes = residuals.reduce((s, r) => s + r * r, 0);
-  const loo = looMae(rows, RIDGE_LAMBDA, -1);
   const dated = traded
     .filter((p) => p.listed_at !== null)
     .sort((a, b) => (a.listed_at! < b.listed_at! ? -1 : a.listed_at! > b.listed_at! ? 1 : 0));
-  const datedRows = dated.map((p) => ({ x: features(p, snapshot.as_of), y: Math.log10(p.mcap_usd!) }));
-  const wf = walkForwardMae(datedRows, RIDGE_LAMBDA, -1, (p) => handSetValue(p, snapshot.as_of), dated);
-  // The hold-out: the last-listed 20% of traded tokens never enter the fit.
-  const cut = Math.floor(dated.length * 0.8);
-  const trainH = datedRows.slice(0, cut);
-  const testH = datedRows.slice(cut);
-  const testP = dated.slice(cut);
-  const betaH = ridgeSolve(trainH.map((t) => t.x), trainH.map((t) => t.y), RIDGE_LAMBDA);
-  const fittedMae = mae(betaH, testH);
+  const yb = traded.map((p) => Math.log10(p.mcap_usd!));
+  const yd = dated.map((p) => Math.log10(p.mcap_usd!));
+  const cats = topCategories(traded);
+  const fams = [...new Set(Object.values(FAMILY_OF))].sort();
+  const meanLogTvl = traded.reduce((s, p) => s + Math.log10(Math.max(1, p.tvl_usd)), 0) / Math.max(1, traded.length);
+  const permB = shuffledIndices(traded.length, 7);
+  const permD = shuffledIndices(dated.length, 7);
+  const Xb = traded.map((p, i) => extFeatures(p, traded, i, permB, snapshot.as_of, meanLogTvl, cats, fams));
+  const Xd = dated.map((p, i) => extFeatures(p, dated, i, permD, snapshot.as_of, meanLogTvl, cats, fams));
+  // The deployed model: TVL alone, columns [0, 1] of the extended matrix.
+  const DEPLOYED = [0, 1];
+  const beta = ridgeSolve(
+    Xb.map((r) => useCols(r, DEPLOYED)),
+    yb,
+    RIDGE_LAMBDA,
+  );
+  const residuals = Xb.map((r, i) => predict(beta, useCols(r, DEPLOYED)) - yb[i]!);
+  const sigma = Math.sqrt(residuals.reduce((s, r) => s + r * r, 0) / Math.max(1, residuals.length));
+  const meanY = yb.reduce((s, v) => s + v, 0) / Math.max(1, yb.length);
+  const ssTot = yb.reduce((s, v) => s + (v - meanY) ** 2, 0);
+  const ssRes = residuals.reduce((s, r) => s + r * r, 0);
+  const loo = looMaeCols(Xb, yb, DEPLOYED, RIDGE_LAMBDA);
+  const wf = walkForwardMaeCols(Xd, yd, DEPLOYED, RIDGE_LAMBDA);
+  const wfHand = walkForwardHandsetMae(dated, yd, snapshot.as_of);
+  const hold = holdoutMaeCols(Xd, yd, DEPLOYED, RIDGE_LAMBDA);
+  const cut = Math.floor(yd.length * 0.8);
   let handMae = 0;
-  for (let i = 0; i < testH.length; i++) handMae += Math.abs(Math.log10(handSetValue(testP[i]!, snapshot.as_of)) - testH[i]!.y);
-  handMae = testH.length === 0 ? 0 : handMae / testH.length;
-  // The ablation: drop each term in turn and re-run both tests.
-  const names = ['log10(TVL)', 'growth', 'maturity', 'chains'];
-  const terms: FitTerm[] = [1, 2, 3, 4].map((idx) => {
-    const lw = looMae(rows, RIDGE_LAMBDA, idx);
-    const ww = walkForwardMae(datedRows, RIDGE_LAMBDA, idx, (p) => handSetValue(p, snapshot.as_of), dated).fitted;
-    const survives = lw > loo && ww > wf.fitted;
+  for (let i = cut; i < yd.length; i++) handMae += Math.abs(Math.log10(handSetValue(dated[i]!, snapshot.as_of)) - yd[i]!);
+  handMae = hold.n === 0 ? 0 : handMae / hold.n;
+  // The ablation: every candidate re-run on all three tests, judged against the deployed model.
+  const nCat = cats.length;
+  const nFam = fams.length;
+  const catCols = Array.from({ length: nCat }, (_, i) => 9 + i);
+  const famCols = Array.from({ length: nFam }, (_, i) => 9 + nCat + i);
+  const variants: { name: string; cols: number[] }[] = [
+    { name: 'TVL only (deployed)', cols: [0, 1] },
+    { name: 'r3 model (TVL + growth + maturity + chains)', cols: [0, 1, 2, 3, 4] },
+    { name: 'drop chains', cols: [0, 1, 2, 3] },
+    { name: 'drop growth + chains', cols: [0, 1, 3] },
+    { name: 'drop maturity + chains', cols: [0, 1, 2] },
+    { name: '+ size curve (logTVL^2)', cols: [0, 1, 2, 3, 4, 5] },
+    { name: '+ momentum (raw 7d change)', cols: [0, 1, 2, 3, 4, 6] },
+    { name: '+ log-age', cols: [0, 1, 2, 3, 4, 7] },
+    { name: '+ chains squared', cols: [0, 1, 2, 3, 4, 8] },
+    { name: '+ category (9 one-hots)', cols: [0, 1, 2, 3, 4, ...catCols] },
+    { name: '+ family (8 one-hots)', cols: [0, 1, 2, 3, 4, ...famCols] },
+    { name: 'placebo (growth permuted)', cols: [0, 1, 2, 3, 4, 9 + nCat + nFam] },
+    { name: 'placebo (growth shifted)', cols: [0, 1, 2, 3, 4, 10 + nCat + nFam] },
+  ];
+  const ablation: AblationRow[] = variants.map((v) => {
+    const l = looMaeCols(Xb, yb, v.cols, RIDGE_LAMBDA);
+    const w = walkForwardMaeCols(Xd, yd, v.cols, RIDGE_LAMBDA);
+    const h = holdoutMaeCols(Xd, yd, v.cols, RIDGE_LAMBDA).fitted;
+    let better = 0;
+    if (l < loo) better++;
+    if (w < wf) better++;
+    if (h < hold.fitted) better++;
     return {
-      term: names[idx - 1]!,
-      weight: round4(beta[idx]!),
-      loo_without: round4(lw),
-      walkforward_without: round4(ww),
-      verdict: survives ? 'kept — survives both tests' : 'kept at shrunk weight — no signal beyond TVL',
+      variant: v.name,
+      loo: round4(l),
+      walkforward: round4(w),
+      holdout: round4(h),
+      verdict:
+        v.name.startsWith('TVL only')
+          ? 'deployed — best on all three tests'
+          : better === 3
+            ? 'beats TVL-only on all three tests'
+            : better === 0
+              ? 'no gain over TVL-only'
+              : `beats TVL-only on ${better} of 3 tests — not kept`,
     };
   });
+  const coverage = coverageReport(Xd, yd, DEPLOYED, RIDGE_LAMBDA);
+  // The bootstrap: 200 refits on resampled traded tokens, for the coefficients' spread.
+  const boots: number[][] = [];
+  for (let b = 0; b < 200; b++) {
+    const idx = resampleIndices(traded.length, 7 + b * 31);
+    const sampleX = idx.map((i) => useCols(Xb[i]!, DEPLOYED));
+    const sampleY = idx.map((i) => yb[i]!);
+    try {
+      boots.push(ridgeSolve(sampleX, sampleY, RIDGE_LAMBDA));
+    } catch {
+      // A resample that will not solve is skipped; the count is reported.
+    }
+  }
+  const coefMean: number[] = [];
+  const coefSe: number[] = [];
+  const coefLo: number[] = [];
+  const coefHi: number[] = [];
+  for (let j = 0; j < beta.length; j++) {
+    const vals = boots.map((b) => b[j]!).sort((a, b) => a - b);
+    const mean = vals.reduce((s, v) => s + v, 0) / Math.max(1, vals.length);
+    const se = Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / Math.max(1, vals.length - 1));
+    coefMean.push(round4(mean));
+    coefSe.push(round4(se));
+    coefLo.push(round4(percentile(vals, 0.025)));
+    coefHi.push(round4(percentile(vals, 0.975)));
+  }
   return {
     version: MODEL_VERSION,
     lambda: RIDGE_LAMBDA,
@@ -432,13 +784,15 @@ export function fitModel(snapshot: Snapshot): FitReport {
     range_factor: round4(Math.pow(10, 0.674 * sigma)),
     r_squared: round4(ssTot === 0 ? 0 : 1 - ssRes / ssTot),
     loo_mae: round4(loo),
-    walkforward_mae: round4(wf.fitted),
-    walkforward_handset_mae: round4(wf.handset),
-    holdout_n: testH.length,
-    holdout_fitted_mae: round4(fittedMae),
+    walkforward_mae: round4(wf),
+    walkforward_handset_mae: round4(wfHand),
+    holdout_n: hold.n,
+    holdout_fitted_mae: round4(hold.fitted),
     holdout_handset_mae: round4(handMae),
-    holdout_improvement_pct: round4(handMae === 0 ? 0 : ((handMae - fittedMae) / handMae) * 100),
-    terms,
+    holdout_improvement_pct: round4(handMae === 0 ? 0 : ((handMae - hold.fitted) / handMae) * 100),
+    ablation,
+    coverage,
+    bootstrap: { n: boots.length, coef_mean: coefMean, coef_se: coefSe, coef_ci_lo: coefLo, coef_ci_hi: coefHi },
   };
 }
 
@@ -457,7 +811,162 @@ export function hasToken(p: SnapshotProtocol): boolean {
   return p.gecko_id !== null || p.symbol !== null || p.mcap_usd !== null;
 }
 
-/** The token odds: the share of peers in each age band that have a token, Laplace smoothed, with its Brier score against the base rate. */
+/** Categories with at least twenty protocols: the odds model's category terms. */
+function oddsCategories(snapshot: Snapshot): string[] {
+  const counts = new Map<string, number>();
+  for (const p of snapshot.protocols) if (p.category !== null) counts.set(p.category, (counts.get(p.category) ?? 0) + 1);
+  return [...counts.entries()].filter(([, n]) => n >= 20).map(([c]) => c).sort();
+}
+
+/** One protocol's odds features: log-age, unknown-age flag, log10 TVL, growth, chains, category one-hots. */
+function logitFeatures(p: SnapshotProtocol, asOf: string, cats: string[]): number[] {
+  const age = ageDays(asOf, p.listed_at);
+  return [
+    Math.log10((age === null ? 365 : age) + 1),
+    age === null ? 1 : 0,
+    Math.log10(Math.max(1, p.tvl_usd)),
+    growthTerm(p.change_7d),
+    chainTerm(p.chains),
+    ...cats.map((c) => (p.category === c ? 1 : 0)),
+  ];
+}
+
+/** A fitted logistic ridge: standardised features, intercept unpenalised, solved by Newton (IRLS). */
+export interface LogitModel {
+  beta: number[];
+  mu: number[];
+  sd: number[];
+}
+
+/** The logistic ridge fit: features standardised on the training rows, penalty lambda on every term but the intercept. */
+function fitLogit(X: number[][], y: number[], lambda: number, warmBeta: number[] | null = null, maxIters = 60): LogitModel {
+  const n = y.length;
+  const d = X[0]!.length;
+  const mu: number[] = new Array<number>(d).fill(0);
+  const sd: number[] = new Array<number>(d).fill(0);
+  for (let j = 0; j < d; j++) {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += X[i]![j]!;
+    mu[j] = s / n;
+    let v = 0;
+    for (let i = 0; i < n; i++) v += (X[i]![j]! - mu[j]!) ** 2;
+    sd[j] = Math.sqrt(v / n) || 1;
+  }
+  const k = d + 1;
+  const beta: number[] = warmBeta !== null ? [...warmBeta] : new Array<number>(k).fill(0);
+  if (warmBeta === null) {
+    const mean = y.reduce((s, v) => s + v, 0) / n;
+    beta[0] = Math.log(Math.max(mean, 1e-6) / Math.max(1 - mean, 1e-6));
+  }
+  for (let it = 0; it < maxIters; it++) {
+    const g: number[] = new Array<number>(k).fill(0);
+    const H: number[][] = Array.from({ length: k }, () => new Array<number>(k).fill(0));
+    for (let i = 0; i < n; i++) {
+      const row = X[i]!;
+      const dr: number[] = new Array<number>(k);
+      dr[0] = 1;
+      for (let j = 0; j < d; j++) dr[j + 1] = (row[j]! - mu[j]!) / sd[j]!;
+      let z = 0;
+      for (let a = 0; a < k; a++) z += beta[a]! * dr[a]!;
+      const zc = Math.max(-30, Math.min(30, z));
+      const p = 1 / (1 + Math.exp(-zc));
+      const w = p * (1 - p) + 1e-6;
+      const r = p - y[i]!;
+      for (let a = 0; a < k; a++) {
+        g[a]! += dr[a]! * r;
+        const wa = w * dr[a]!;
+        for (let b = a; b < k; b++) H[a]![b]! += wa * dr[b]!;
+      }
+    }
+    for (let a = 0; a < k; a++) {
+      for (let b = 0; b < a; b++) H[a]![b]! = H[b]![a]!;
+      H[a]![a]! += a === 0 ? 0 : lambda;
+      g[a]! += (a === 0 ? 0 : lambda) * beta[a]!;
+    }
+    const step = solveLinear(H, g);
+    let maxStep = 0;
+    for (let a = 0; a < k; a++) {
+      beta[a]! -= step[a]!;
+      maxStep = Math.max(maxStep, Math.abs(step[a]!));
+    }
+    if (maxStep < 1e-8) break;
+  }
+  return { beta, mu, sd };
+}
+
+/** The fitted odds of each row under a logistic model. */
+function predictLogit(model: LogitModel, X: number[][]): number[] {
+  const out: number[] = [];
+  for (const row of X) {
+    let z = model.beta[0]!;
+    for (let j = 0; j < row.length; j++) z += model.beta[j + 1]! * ((row[j]! - model.mu[j]!) / model.sd[j]!);
+    out.push(1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z)))));
+  }
+  return out;
+}
+
+/** The Brier score: the mean squared gap between a probability and the 0/1 outcome. */
+function brierScore(ps: number[], ys: number[]): number {
+  let s = 0;
+  for (let i = 0; i < ps.length; i++) s += (ps[i]! - ys[i]!) ** 2;
+  return ps.length === 0 ? 0 : s / ps.length;
+}
+
+/** Walk-forward Brier of the fitted odds: dated protocols ordered by listing date, each fit on the earlier folds and tested on the next. */
+function walkForwardBrierLogit(X: number[][], y: number[], datedIdx: number[], nfolds: number, lambda: number): number {
+  const n = datedIdx.length;
+  const fold = Math.floor(n / nfolds);
+  let s = 0;
+  let cnt = 0;
+  for (let f = 1; f < nfolds; f++) {
+    const tr = datedIdx.slice(0, f * fold);
+    const te = datedIdx.slice(f * fold, (f + 1) * fold);
+    const model = fitLogit(
+      tr.map((i) => X[i]!),
+      tr.map((i) => y[i]!),
+      lambda,
+    );
+    const pr = predictLogit(model, te.map((i) => X[i]!));
+    for (let j = 0; j < te.length; j++) {
+      s += (pr[j]! - y[te[j]!]!) ** 2;
+      cnt++;
+    }
+  }
+  return cnt === 0 ? 0 : s / cnt;
+}
+
+/** Walk-forward Brier of the age-band odds on the same folds, rates from the training folds only. */
+function walkForwardBrierAge(snapshot: Snapshot, y: number[], datedIdx: number[], nfolds: number): number {
+  const bands = ['<1y', '1-2y', '2-3y', '3y+', 'unknown'];
+  const n = datedIdx.length;
+  const fold = Math.floor(n / nfolds);
+  let s = 0;
+  let cnt = 0;
+  for (let f = 1; f < nfolds; f++) {
+    const tr = datedIdx.slice(0, f * fold);
+    const te = datedIdx.slice(f * fold, (f + 1) * fold);
+    const rates = new Map<string, number>();
+    for (const b of bands) {
+      let tot = 0;
+      let lau = 0;
+      for (const i of tr) {
+        if (ageBand(snapshot.as_of, snapshot.protocols[i]!.listed_at) === b) {
+          tot++;
+          if (hasToken(snapshot.protocols[i]!)) lau++;
+        }
+      }
+      rates.set(b, (lau + 1) / (tot + 2));
+    }
+    for (const i of te) {
+      const p = rates.get(ageBand(snapshot.as_of, snapshot.protocols[i]!.listed_at))!;
+      s += (p - y[i]!) ** 2;
+      cnt++;
+    }
+  }
+  return cnt === 0 ? 0 : s / cnt;
+}
+
+/** The token odds: the age-band peers' record (kept as the baseline) and the fitted multi-term model that the board uses. */
 export function tokenOdds(snapshot: Snapshot): OddsReport {
   const bands = ['<1y', '1-2y', '2-3y', '3y+', 'unknown'];
   const counts = new Map<string, { launched: number; total: number }>();
@@ -489,16 +998,61 @@ export function tokenOdds(snapshot: Snapshot): OddsReport {
     baseBrier += (baseRate - y) ** 2;
   }
   const n = Math.max(1, snapshot.protocols.length);
-  return { base_rate: round4(baseRate), brier: round4(brier / n), base_brier: round4(baseBrier / n), bands: bandRows };
+  // The fitted odds: logistic ridge on age, size, growth, chains and category (lambda 10).
+  const cats = oddsCategories(snapshot);
+  const X = snapshot.protocols.map((p) => logitFeatures(p, snapshot.as_of, cats));
+  const y = snapshot.protocols.map((p) => (hasToken(p) ? 1 : 0));
+  const model = fitLogit(X, y, 10);
+  const names = ['log-age', 'age unknown', 'log10(TVL)', 'growth', 'chains', ...cats.map((c) => `category: ${c}`)];
+  const coefficients: OddsTerm[] = names.map((term, i) => ({ term, weight: round4(model.beta[i + 1]!) }));
+  // Leave-one-out Brier, warm-started from the full fit: each fold refits on all but one protocol.
+  const looPs: number[] = new Array<number>(y.length).fill(0);
+  for (let i = 0; i < y.length; i++) {
+    const Xt: number[][] = [];
+    const yt: number[] = [];
+    for (let j = 0; j < y.length; j++) {
+      if (j === i) continue;
+      Xt.push(X[j]!);
+      yt.push(y[j]!);
+    }
+    looPs[i] = predictLogit(fitLogit(Xt, yt, 10, model.beta, 25), [X[i]!])[0]!;
+  }
+  const datedIdx = snapshot.protocols
+    .map((p, i) => i)
+    .filter((i) => snapshot.protocols[i]!.listed_at !== null)
+    .sort((a, b) => (snapshot.protocols[a]!.listed_at! < snapshot.protocols[b]!.listed_at! ? -1 : 1));
+  return {
+    base_rate: round4(baseRate),
+    brier: round4(brier / n),
+    base_brier: round4(baseBrier / n),
+    bands: bandRows,
+    multi: {
+      lambda: 10,
+      categories: cats,
+      coefficients,
+      loo_brier: round4(brierScore(looPs, y)),
+      walkforward_brier: round4(walkForwardBrierLogit(X, y, datedIdx, 5, 10)),
+      walkforward4_brier: round4(walkForwardBrierLogit(X, y, datedIdx, 4, 10)),
+      walkforward3_brier: round4(walkForwardBrierLogit(X, y, datedIdx, 3, 10)),
+      age_walkforward_brier: round4(walkForwardBrierAge(snapshot, y, datedIdx, 5)),
+      age_walkforward4_brier: round4(walkForwardBrierAge(snapshot, y, datedIdx, 4)),
+      age_walkforward3_brier: round4(walkForwardBrierAge(snapshot, y, datedIdx, 3)),
+      model: { beta: model.beta.map(round4), mu: model.mu.map(round4), sd: model.sd.map(round4) },
+    },
+  };
 }
 
-/** The token odds of one protocol, from its age band. */
+/** The token odds of one protocol, from the fitted multi-term model. */
 export function oddsFor(snapshot: Snapshot, odds: OddsReport, p: SnapshotProtocol): number {
-  const band = odds.bands.find((b) => b.band === ageBand(snapshot.as_of, p.listed_at));
-  return band === undefined ? odds.base_rate : band.odds;
+  const cats = odds.multi.categories;
+  const row = logitFeatures(p, snapshot.as_of, cats);
+  const m = odds.multi.model;
+  let z = m.beta[0]!;
+  for (let j = 0; j < row.length; j++) z += m.beta[j + 1]! * ((row[j]! - m.mu[j]!) / m.sd[j]!);
+  return Math.round((1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))))) * 10000) / 10000;
 }
 
-/** The fitted implied value of one protocol, with its range and terms. */
+/** The fitted implied value of one protocol, with its range and terms. The fit itself uses log10(TVL) alone; growth, maturity and chains are shown as the protocol's own figures, not as fitted terms. */
 export function impliedValue(p: SnapshotProtocol, asOf: string, fit: FitReport): {
   implied: number;
   p25: number;
@@ -510,7 +1064,7 @@ export function impliedValue(p: SnapshotProtocol, asOf: string, fit: FitReport):
   age: number | null;
 } {
   const x = features(p, asOf);
-  const logImplied = predict(fit.coefficients, x);
+  const logImplied = predict(fit.coefficients, valueFeatures(p));
   const implied = Math.max(1, Math.round(Math.pow(10, logImplied)));
   const p25 = Math.max(1, Math.round(implied / fit.range_factor));
   const p75 = Math.max(1, Math.round(implied * fit.range_factor));
@@ -864,7 +1418,17 @@ export function buildBoard(snapshot: Snapshot, fit: FitReport, odds: OddsReport)
     const o = oddsFor(snapshot, odds, p);
     const cost = farmCostUsd(p);
     const verdict = verdictFor(v.implied, o, cost);
-    return { p, v, o, cost, verdict };
+    // The row's own economics: a 5%-a-year charge on the capital over the hold, the
+    // net per active hour after that charge, and the token odds at which the farm
+    // breaks even. The verdict itself is unchanged — these are extra columns.
+    const capital = capitalFor(p);
+    const hold = holdDaysFor(v.age);
+    const capCharge = Math.round(capital * 0.05 * (hold / 365) * 100) / 100;
+    const expectedRaw = v.implied * o * FARM_SHARE;
+    const netCc = Math.round((expectedRaw - cost - capCharge) * 100) / 100;
+    const netPerHourCc = Math.round((netCc / ACTIVE_HOURS) * 100) / 100;
+    const breakeven = Math.min(9.99, (cost + capCharge) / (v.implied * FARM_SHARE));
+    return { p, v, o, cost, verdict, capCharge, netPerHourCc, breakeven };
   });
   scored.sort((a, b) => b.v.implied - a.v.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
@@ -890,6 +1454,9 @@ export function buildBoard(snapshot: Snapshot, fit: FitReport, odds: OddsReport)
     net_usd: s.verdict.net,
     net_per_hour_usd: s.verdict.netPerHour,
     farm_cost_usd: s.cost,
+    capital_charge_usd: s.capCharge,
+    net_per_hour_cc_usd: s.netPerHourCc,
+    breakeven_odds: round4(s.breakeven),
     model: {
       log_implied: s.v.logImplied,
       growth_term: s.v.growth,
@@ -940,6 +1507,9 @@ export function radarRow(row: BoardRow): RadarRow {
     net_usd: row.net_usd,
     net_per_hour_usd: row.net_per_hour_usd,
     farm_cost_usd: row.farm_cost_usd,
+    capital_charge_usd: row.capital_charge_usd,
+    net_per_hour_cc_usd: row.net_per_hour_cc_usd,
+    breakeven_odds: row.breakeven_odds,
     log_implied: row.model.log_implied,
     growth_term: row.model.growth_term,
     maturity_term: row.model.maturity_term,
