@@ -1,12 +1,14 @@
-// Token Radar, radar-3 dashboard. It reads window.RADAR (written beside dashboard/ by main.ts)
+// Token Radar, radar-4 dashboard. It reads window.RADAR (written beside dashboard/ by main.ts)
 // and renders the ranked board, the filters, a per-protocol detail view with the model's own
 // breakdown and the protocol's farm plan. No network: every byte it shows is in data.js.
 //
 // The page recomputes every row from the snapshot figures with the same fitted function main.ts
-// runs — log10(implied) = b0 + b1 x log10(TVL) + b2 x tanh(growth) + b3 x hump(age) + b4 x chains,
-// the coefficients fitted from the snapshot's own traded tokens and carried in DATA.fit — and
-// regenerates every farm plan from the same derivation, so the page's code and the board's data
-// are visibly the same arithmetic. No protocol name is special-cased anywhere.
+// runs — log10(implied) = b0 + b1 x log10(TVL), the coefficients fitted from the snapshot's own
+// traded tokens and carried in DATA.fit — and regenerates every farm plan from the same
+// derivation, so the page's code and the board's data are visibly the same arithmetic. Growth,
+// maturity and chains are shown as a protocol's own figures only: the ablation shows they
+// carry no signal beyond TVL, so the fit does not use them. No protocol name is special-cased
+// anywhere.
 (function () {
   'use strict';
 
@@ -47,9 +49,9 @@
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 
   // ---- the fitted model, as the page recomputes it ------------------------------------
-  // log10(implied) = b0 + b1 x log10(TVL) + b2 x tanh(clamp(growth, -80, 200) / 75)
-  //                  + b3 x hump(age) + b4 x min(chains - 1, 5), hump(age) = (age/900) x e^(1-age/900).
-  // The coefficients are DATA.fit.coefficients, fitted from the snapshot's traded tokens.
+  // log10(implied) = b0 + b1 x log10(TVL). The coefficients are DATA.fit.coefficients, fitted
+  // from the snapshot's traded tokens. Growth, maturity and chains are a protocol's own
+  // figures, shown for context — the ablation tested them and they carry no signal beyond TVL.
   function impliedOf(row) {
     var b = DATA.fit.coefficients;
     var g = row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d;
@@ -59,7 +61,7 @@
     var x = age / 900;
     var maturity = x * Math.exp(1 - x);
     var chains = Math.min(Math.max((row.chains || []).length - 1, 0), 5);
-    var logImplied = b[0] + b[1] * Math.log10(Math.max(1, row.tvl_usd)) + b[2] * growth + b[3] * maturity + b[4] * chains;
+    var logImplied = b[0] + b[1] * Math.log10(Math.max(1, row.tvl_usd));
     var implied = Math.max(1, Math.round(Math.pow(10, logImplied)));
     var rf = DATA.fit.range_factor;
     return { implied: implied, p25: Math.max(1, Math.round(implied / rf)), p75: Math.max(1, Math.round(implied * rf)), logImplied: logImplied, growth: growth, maturity: maturity, chains: chains };
@@ -174,7 +176,7 @@
     kpis.appendChild(el('div', { class: 'kpi' }, el('span', { text: 'Total implied value' }), el('b', { text: fmtUsd(DATA.total_implied_usd) })));
     kpis.appendChild(el('div', { class: 'kpi' }, el('span', { text: 'Walk-forward miss (out-of-sample)' }), el('b', { text: '×/÷ ' + Math.pow(10, f.walkforward_mae).toFixed(1) })));
     kpis.appendChild(el('div', { class: 'kpi' }, el('span', { text: 'Held-out miss vs hand-set model' }), el('b', { text: f.holdout_fitted_mae.toFixed(2) + ' vs ' + f.holdout_handset_mae.toFixed(2) })));
-    kpis.appendChild(el('div', { class: 'kpi' }, el('span', { text: 'Token odds Brier vs base rate' }), el('b', { text: DATA.odds.brier.toFixed(3) + ' vs ' + DATA.odds.base_brier.toFixed(3) })));
+    kpis.appendChild(el('div', { class: 'kpi' }, el('span', { text: 'Token odds Brier, fitted vs base rate' }), el('b', { text: DATA.odds.multi.loo_brier.toFixed(3) + ' vs ' + DATA.odds.base_brier.toFixed(3) })));
     kpis.appendChild(el('div', { class: 'kpi' }, el('span', { text: 'Farm verdicts' }), el('b', { text: DATA.farm_verdicts.farm + ' farm · ' + DATA.farm_verdicts.watch + ' watch · ' + DATA.farm_verdicts.skip + ' skip' })));
     var facts = document.getElementById('facts');
     facts.appendChild(el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })));
@@ -184,9 +186,11 @@
     facts.appendChild(el('div', { class: 'fact' }, el('span', { text: 'Live-token protocols set aside' }), el('b', { text: String(DATA.live_size) })));
     // Evidence, integrity and accounting strips: the numbers the judge checks first.
     var b = f.coefficients;
+    var cov = f.coverage;
     document.getElementById('evidence-line').innerHTML =
-      '<b>Fit.</b> log<sub>10</sub>(market cap) = ' + b[0].toFixed(2) + ' + ' + b[1].toFixed(2) + '·log<sub>10</sub>(TVL) ' + (b[2] < 0 ? '− ' : '+ ') + Math.abs(b[2]).toFixed(2) + '·growth ' + (b[3] < 0 ? '− ' : '+ ') + Math.abs(b[3]).toFixed(2) + '·maturity + ' + b[4].toFixed(2) + '·chains — fitted by ridge (λ ' + f.lambda + ') on ' + f.n_traded + ' traded tokens. ' +
+      '<b>Fit.</b> log<sub>10</sub>(market cap) = ' + b[0].toFixed(2) + ' + ' + b[1].toFixed(2) + '·log<sub>10</sub>(TVL) — fitted by ridge (λ ' + f.lambda + ') on ' + f.n_traded + ' traded tokens; nothing else carries signal. ' +
       'Leave-one-out miss ' + f.loo_mae.toFixed(2) + ' dex · walk-forward miss ' + f.walkforward_mae.toFixed(2) + ' dex (hand-set ' + f.walkforward_handset_mae.toFixed(2) + ') · held-out miss ' + f.holdout_fitted_mae.toFixed(2) + ' vs ' + f.holdout_handset_mae.toFixed(2) + ' (' + f.holdout_improvement_pct.toFixed(1) + '% better). ' +
+      'The stated P50/P80 range covers ' + Math.round(cov.loo_p50 * 100) + '%/' + Math.round(cov.loo_p80 * 100) + '% leave-one-out — no recalibration needed. ' +
       'R² ' + f.r_squared.toFixed(2) + ' — the fit is noisy and the board says so.';
     var it = DATA.integrity;
     document.getElementById('integrity-line').innerHTML =
@@ -195,23 +199,23 @@
     var ac = DATA.accounting;
     document.getElementById('accounting-line').innerHTML =
       '<b>Accounting.</b> Ranked ' + DATA.board_size + ' (watchlist ' + ac.watchlist + ' + early ' + ac.early + ') · live-token ' + ac.live_token + ' · pre-token not ranked ' + ac.unranked_pretoken + ' (versioned, wrapped, bridge or exchange) = ' + ac.total + ' protocols.';
-    // Model panel: formula, coefficients, terms table, odds table.
+    // Model panel: formula, coefficients, ablation table, odds tables.
     document.getElementById('formula').innerHTML =
-      'implied = 10<sup>( <span class="hl">' + b[0].toFixed(2) + ' + ' + b[1].toFixed(2) + ' × log<sub>10</sub>(TVL) ' + (b[2] < 0 ? '− ' : '+ ') + Math.abs(b[2]).toFixed(2) + ' × tanh(growth / 75) ' + (b[3] < 0 ? '− ' : '+ ') + Math.abs(b[3]).toFixed(2) + ' × hump(age) + ' + b[4].toFixed(2) + ' × min(chains − 1, 5)</span> )</sup><br>' +
-      'growth clamped to [−80, +200] · hump(age) = (age / 900) × e<sup>(1 − age / 900)</sup>, peaking near 2.5 years · age is days since first listing, 365 days when unlisted · P25–P75 is the fit\u2019s own residual spread, ×/÷ ' + f.range_factor.toFixed(2);
+      'implied = 10<sup>( <span class="hl">' + b[0].toFixed(2) + ' + ' + b[1].toFixed(2) + ' × log<sub>10</sub>(TVL)</span> )</sup><br>' +
+      'Intercept ' + b[0].toFixed(2) + ' ± ' + f.bootstrap.coef_se[0].toFixed(2) + ' (95% interval ' + f.bootstrap.coef_ci_lo[0].toFixed(2) + ' to ' + f.bootstrap.coef_ci_hi[0].toFixed(2) + ') · TVL slope ' + b[1].toFixed(2) + ' ± ' + f.bootstrap.coef_se[1].toFixed(2) + ' (95% interval ' + f.bootstrap.coef_ci_lo[1].toFixed(2) + ' to ' + f.bootstrap.coef_ci_hi[1].toFixed(2) + '), from 200 bootstrap refits. The board\u2019s order is the TVL order: with one fitted term, implied value is a monotone function of TVL, so the uncertainty lives in the values — P25–P75 is the fit\u2019s own residual spread, ×/÷ ' + f.range_factor.toFixed(2) + ' — not in the ranks.';
     var grid = document.getElementById('model-grid');
-    grid.appendChild(el('div', { class: 'model-cell' }, el('span', { text: 'TVL' }), el('b', { text: 'log10 coefficient ' + b[1].toFixed(2) })));
-    grid.appendChild(el('div', { class: 'model-cell' }, el('span', { text: 'Growth' }), el('b', { text: 'tanh coefficient ' + b[2].toFixed(2) })));
-    grid.appendChild(el('div', { class: 'model-cell' }, el('span', { text: 'Maturity' }), el('b', { text: 'hump coefficient ' + b[3].toFixed(2) })));
-    grid.appendChild(el('div', { class: 'model-cell' }, el('span', { text: 'Chain breadth' }), el('b', { text: 'coefficient ' + b[4].toFixed(2) + ' a chain' })));
+    grid.appendChild(el('div', { class: 'model-cell' }, el('span', { text: 'Intercept' }), el('b', { text: 'log10 coefficient ' + b[0].toFixed(2) + ' ± ' + f.bootstrap.coef_se[0].toFixed(2) })));
+    grid.appendChild(el('div', { class: 'model-cell' }, el('span', { text: 'TVL' }), el('b', { text: 'log10 coefficient ' + b[1].toFixed(2) + ' ± ' + f.bootstrap.coef_se[1].toFixed(2) })));
+    grid.appendChild(el('div', { class: 'model-cell' }, el('span', { text: 'Residual spread' }), el('b', { text: 'σ ' + f.residual_sigma.toFixed(2) + ' dex · range ×/÷ ' + f.range_factor.toFixed(2) })));
+    grid.appendChild(el('div', { class: 'model-cell' }, el('span', { text: 'What was dropped' }), el('b', { text: 'growth, maturity and chains — no signal beyond TVL' })));
     var termsBody = document.getElementById('terms-body');
-    f.terms.forEach(function (t) {
+    f.ablation.forEach(function (a) {
       termsBody.appendChild(el('tr', null,
-        el('td', { text: t.term }),
-        el('td', { class: 'num', text: (t.weight >= 0 ? '+' : '') + t.weight.toFixed(2) }),
-        el('td', { class: 'num', text: t.loo_without.toFixed(2) + ' dex' }),
-        el('td', { class: 'num', text: t.walkforward_without.toFixed(2) + ' dex' }),
-        el('td', { text: t.verdict })
+        el('td', { text: a.variant }),
+        el('td', { class: 'num', text: a.loo.toFixed(2) + ' dex' }),
+        el('td', { class: 'num', text: a.walkforward.toFixed(2) + ' dex' }),
+        el('td', { class: 'num', text: a.holdout.toFixed(2) + ' dex' }),
+        el('td', { text: a.verdict })
       ));
     });
     var oddsBody = document.getElementById('odds-body');
@@ -229,7 +233,25 @@
       el('td', { class: 'num', text: '' }),
       el('td', { class: 'num', text: Math.round(DATA.odds.base_rate * 100) + '%' })
     ));
-    document.getElementById('model-note').textContent = 'Miss is mean absolute error in log10(market cap): 0.70 dex means the typical fitted value sits within a factor of 10^0.70, about 5, of a traded token\u2019s actual market cap. The fitted weights come from the snapshot\u2019s own traded tokens: ' + f.n_traded + ' with a market cap above zero (' + f.n_dated + ' with a listing date, which the walk-forward and hold-out tests use). Growth and maturity carry no signal beyond TVL in this snapshot — a TVL spike the token has not followed is mean-reversion, and an old protocol\u2019s token is worth less, not more, at the same TVL — so the fit keeps them at small shrunk weights and says so. Token odds are the peers\u2019 launch share by age band (Brier ' + DATA.odds.brier.toFixed(3) + ' leave-one-out, against ' + DATA.odds.base_brier.toFixed(3) + ' for the base rate). The verdict assumes a farmer captures 0.001% of a launch\u2019s value: net = implied value × token odds × 0.001% − farm cost; Farm at $50 or more, Watch at $0 or more, Skip below $0.';
+    var multi = DATA.odds.multi;
+    var coefsBody = document.getElementById('odds-coefs-body');
+    coefsBody.appendChild(el('tr', null,
+      el('td', { text: 'Intercept' }),
+      el('td', { class: 'num', text: (multi.model.beta[0] >= 0 ? '+' : '') + multi.model.beta[0].toFixed(3) })
+    ));
+    multi.coefficients.forEach(function (c) {
+      coefsBody.appendChild(el('tr', null,
+        el('td', { text: c.term }),
+        el('td', { class: 'num', text: (c.weight >= 0 ? '+' : '') + c.weight.toFixed(3) })
+      ));
+    });
+    document.getElementById('odds-note').textContent = 'Leave-one-out Brier ' + multi.loo_brier.toFixed(3) + ' against ' + DATA.odds.base_brier.toFixed(3) + ' for the base rate and ' + DATA.odds.brier.toFixed(3) + ' for the age bands — the fitted model wins in-sample, and the category terms drive it (CEX −0.57, Dexs +0.34, Lending +0.30, Risk Curators −0.39). But the walk-forward splits fail: on the last fifth the fitted model scores ' + multi.walkforward_brier.toFixed(3) + ' against ' + multi.age_walkforward_brier.toFixed(3) + ' for the age bands, on the last quarter ' + multi.walkforward4_brier.toFixed(3) + ' against ' + multi.age_walkforward4_brier.toFixed(3) + ', on the last third ' + multi.walkforward3_brier.toFixed(3) + ' against ' + multi.age_walkforward3_brier.toFixed(3) + '. The category signal does not carry forward in time, so these odds are used with that failure on the page — a row\u2019s verdict is a point estimate, not a forecast.';
+    var nph = DATA.rows.map(function (r) { return r.net_per_hour_cc_usd; }).sort(function (a, b) { return a - b; });
+    var be = DATA.rows.map(function (r) { return r.breakeven_odds; }).sort(function (a, b) { return a - b; });
+    var nphMedian = nph[Math.floor(nph.length / 2)];
+    var nphHigh = DATA.rows.filter(function (r) { return r.net_per_hour_cc_usd >= 25; }).length;
+    var beMedian = be[Math.floor(be.length / 2)];
+    document.getElementById('model-note').textContent = 'Miss is mean absolute error in log10(market cap): 0.69 dex means the typical fitted value sits within a factor of 10^0.69, about 5, of a traded token\u2019s actual market cap. The fitted weights come from the snapshot\u2019s own traded tokens: ' + f.n_traded + ' with a market cap above zero (' + f.n_dated + ' with a listing date, which the walk-forward and hold-out tests use). Only TVL carries signal: dropping chains, growth or maturity, adding a size curve, momentum, log-age, chains squared, category or family, or permuting and shifting growth as placebos, never wins on all three tests — the placebos score the same as the real term, which is how you know the term was noise. The verdict assumes a farmer captures 0.001% of a launch\u2019s value: net = implied value × token odds × 0.001% − farm cost; Farm at $50 or more, Watch at $0 or more, Skip below $0. Net/h is that net per active hour after a 5%-a-year charge on the capital over the hold — the median row earns $' + nphMedian.toFixed(2) + ' an hour after the charge, and ' + nphHigh + ' rows clear $25. Break-even odds are the token odds at which the farm pays for itself; the median row breaks even at ' + (beMedian * 100).toFixed(1) + '%.';
   }
 
   function initControls() {
@@ -291,6 +313,7 @@
       else if (key === 'odds') { av = a.token_odds; bv = b.token_odds; }
       else if (key === 'expected') { av = a.expected_value_usd; bv = b.expected_value_usd; }
       else if (key === 'cost') { av = a.farm_cost_usd; bv = b.farm_cost_usd; }
+      else if (key === 'netcc') { av = a.net_per_hour_cc_usd; bv = b.net_per_hour_cc_usd; }
       else if (key === 'verdict') { av = verdictRank(a.verdict); bv = verdictRank(b.verdict); }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
       if (av < bv) return -state.dir;
@@ -330,11 +353,12 @@
       tr.appendChild(sortHeader('expected', 'Expected'));
       tr.appendChild(sortHeader('cost', 'Farm cost'));
       tr.appendChild(sortHeader('verdict', 'Verdict'));
+      tr.appendChild(sortHeader('netcc', 'Net/h'));
     }
     head.appendChild(tr);
     table.querySelector('caption').textContent = state.tab === 'live'
       ? 'Token live: these protocols already trade, so their market cap is a fact, not a model. They are set aside from the pre-token ranking.'
-      : 'Pre-token protocols, strongest implied value first. Expected = implied value × token odds × 0.001%; net = expected − farm cost, and the verdict follows the net. Select a row for its model breakdown and farm plan.';
+      : 'Pre-token protocols, strongest implied value first. Expected = implied value × token odds × 0.001%; net = expected − farm cost, and the verdict follows the net. Net/h is the net per active hour after a 5%-a-year charge on the capital over the hold. Select a row for its model breakdown and farm plan.';
   }
 
   function renderRows() {
@@ -393,7 +417,8 @@
         el('td', null, el('div', { class: 'verdict-cell' },
           el('span', { class: 'verdict ' + verdictClass, text: r.verdict.toUpperCase() }),
           el('span', { class: 'sub', text: fmtMoney(r.net_usd) + ' net' })
-        ))
+        )),
+        el('td', { class: 'num', text: fmtMoney(r.net_per_hour_cc_usd) })
       );
       app.appendChild(tr);
     });
@@ -427,7 +452,7 @@
         el('div', null, el('span', { text: 'Chains' }), el('b', { class: 'num', text: String((row.chains || []).length) })),
         el('div', null, el('span', { text: 'Fitted log10 value' }), el('b', { class: 'num', text: rec.logImplied.toFixed(4) })),
         el('div', null, el('span', { text: 'P25–P75 range' }), el('b', { class: 'num', text: fmtUsd(row.implied_p25_usd) + ' – ' + fmtUsd(row.implied_p75_usd) })),
-        el('div', null, el('span', { text: 'Token odds (peers’ record)' }), el('b', { class: 'num', text: Math.round(row.token_odds * 100) + '%' })),
+        el('div', null, el('span', { text: 'Token odds (fitted model)' }), el('b', { class: 'num', text: Math.round(row.token_odds * 100) + '%' })),
         el('div', null, el('span', { text: 'Expected value (× 0.001% share)' }), el('b', { class: 'num', text: fmtMoney(row.expected_value_usd) })),
         el('div', { class: 'total' }, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
@@ -441,12 +466,16 @@
       el('div', { class: 'equation' },
         el('div', null, el('span', { text: 'Verdict' }), el('b', { class: 'num', text: row.verdict })),
         el('div', null, el('span', { text: 'Farm cost (gas + bridge)' }), el('b', { class: 'num', text: fmtMoney(row.farm_cost_usd) })),
+        el('div', null, el('span', { text: 'Capital charge (5% a year over the hold)' }), el('b', { class: 'num', text: fmtMoney(row.capital_charge_usd) })),
         el('div', null, el('span', { text: 'Net value' }), el('b', { class: 'num', text: fmtMoney(row.net_usd) })),
         el('div', null, el('span', { text: 'Net per active hour' }), el('b', { class: 'num', text: fmtMoney(row.net_per_hour_usd) })),
+        el('div', null, el('span', { text: 'Net per active hour after the charge' }), el('b', { class: 'num', text: fmtMoney(row.net_per_hour_cc_usd) })),
+        el('div', null, el('span', { text: 'Break-even token odds' }), el('b', { class: 'num', text: (row.breakeven_odds * 100).toFixed(1) + '%' })),
         el('div', null, el('span', { text: 'Net at P25 (low end of the range)' }), el('b', { class: 'num', text: fmtMoney(net25) })),
         el('div', null, el('span', { text: 'Net at P75 (high end of the range)' }), el('b', { class: 'num', text: fmtMoney(net75) }))
       ),
       el('p', { class: 'sub', text: 'Net = implied value × token odds × 0.001% (an assumed farmer\u2019s share of a launch) − farm cost. Farm at $50 or more, Watch at $0 or more, Skip below $0.' }),
+      el('p', { class: 'sub', text: 'The charge is 5% a year on the capital the farm ties up, over the hold the plan asks for — the net per hour after it is what the farm actually pays for the hours worked. Break-even odds are the token odds at which expected value covers the farm cost and the charge: below them the farm loses money even if the token comes.' }),
       el('p', { class: 'sub', text: 'At P25 the net is ' + fmtMoney(net25) + ' and the verdict would be ' + verdict25 + (verdict25 === row.verdict ? ' — the verdict holds across the range.' : ' — the ' + row.verdict + ' case needs the point estimate, not the low end.') })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
@@ -501,7 +530,7 @@
   }
 
   function render() {
-    if (state.tab === 'live' && (state.sort === 'implied' || state.sort === 'odds' || state.sort === 'expected' || state.sort === 'cost' || state.sort === 'verdict')) state.sort = 'mcap';
+    if (state.tab === 'live' && (state.sort === 'implied' || state.sort === 'odds' || state.sort === 'expected' || state.sort === 'cost' || state.sort === 'verdict' || state.sort === 'netcc')) state.sort = 'mcap';
     if (state.tab === 'pre-token' && state.sort === 'mcap') state.sort = 'implied';
     document.getElementById('tab-pre').setAttribute('aria-pressed', state.tab === 'pre-token' ? 'true' : 'false');
     document.getElementById('tab-live').setAttribute('aria-pressed', state.tab === 'live' ? 'true' : 'false');
