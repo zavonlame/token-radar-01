@@ -88,7 +88,7 @@ export interface Snapshot {
 }
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-5';
+export const MODEL_VERSION = 'radar-6';
 
 /** The ridge penalty for the value fit, chosen by leave-one-out error. */
 export const RIDGE_LAMBDA = 10;
@@ -157,6 +157,16 @@ export interface FitReport {
   loo_mae: number;
   walkforward_mae: number;
   walkforward_handset_mae: number;
+  /** Median-miss headline (same errors as the means above, summarised by median). */
+  loo_med: number;
+  loo_med_x: number;
+  flat_med_x: number;
+  wf_med_x: number;
+  split_silver_x: number;
+  split_kevin_x: number;
+  /** Share of leave-one-out caps within 3× of the real cap (flat ratio alongside). */
+  within3: number;
+  flat_within3: number;
   holdout_n: number;
   holdout_fitted_mae: number;
   holdout_handset_mae: number;
@@ -202,6 +212,9 @@ export interface OddsRule {
   walkforward_brier: number;
   walkforward4_brier: number;
   walkforward3_brier: number;
+  /** Leave-one-out AUC: the rule's rank quality against the age bands'. */
+  loo_auc: number;
+  age_loo_auc: number;
   age_walkforward_brier: number;
   age_walkforward4_brier: number;
   age_walkforward3_brier: number;
@@ -611,6 +624,66 @@ function percentile(sorted: number[], q: number): number {
   return sorted[lo]! + (sorted[hi]! - sorted[lo]!) * (pos - lo);
 }
 
+/** The median of a set of numbers — the winners' headline summary of a miss distribution. */
+function medianOf(values: number[]): number {
+  if (values.length === 0) return 0;
+  return percentile([...values].sort((a, b) => a - b), 0.5);
+}
+
+/** Leave-one-out absolute errors on the chosen columns: one |error| per protocol, in row order. */
+function looAbsErrors(X: number[][], y: number[], cols: number[], lambda: number): number[] {
+  const errs: number[] = [];
+  for (let i = 0; i < y.length; i++) {
+    const trainX: number[][] = [];
+    const trainY: number[] = [];
+    for (let j = 0; j < y.length; j++) {
+      if (j === i) continue;
+      trainX.push(useCols(X[j]!, cols));
+      trainY.push(y[j]!);
+    }
+    const beta = ridgeSolve(trainX, trainY, lambda);
+    errs.push(Math.abs(predict(beta, useCols(X[i]!, cols)) - y[i]!));
+  }
+  return errs;
+}
+
+/** Walk-forward absolute errors on the chosen columns: the four dated folds' test errors, in order. */
+function walkForwardAbsErrors(X: number[][], y: number[], cols: number[], lambda: number): number[] {
+  const fold = Math.floor(y.length / 5);
+  const errs: number[] = [];
+  for (let f = 1; f < 5; f++) {
+    const beta = ridgeSolve(
+      X.slice(0, f * fold).map((r) => useCols(r, cols)),
+      y.slice(0, f * fold),
+      lambda,
+    );
+    for (let i = f * fold; i < Math.min((f + 1) * fold, y.length); i++) {
+      errs.push(Math.abs(predict(beta, useCols(X[i]!, cols)) - y[i]!));
+    }
+  }
+  return errs;
+}
+
+/** The flat ratio baseline's errors: |log10(mcap/TVL) − median log-ratio| per traded token. */
+function flatRatioErrors(traded: SnapshotProtocol[]): number[] {
+  const ratios = traded.map((p) => Math.log10(p.mcap_usd!) - Math.log10(Math.max(1, p.tvl_usd)));
+  const mid = medianOf(ratios);
+  return ratios.map((r) => Math.abs(r - mid));
+}
+
+/** Median absolute error of a prefix split: fit rows [0, cut), test rows [cut, n). */
+function prefixSplitMedian(X: number[][], y: number[], cut: number, cols: number[], lambda: number): number {
+  if (cut <= 0 || cut >= y.length) return 0;
+  const beta = ridgeSolve(
+    X.slice(0, cut).map((r) => useCols(r, cols)),
+    y.slice(0, cut),
+    lambda,
+  );
+  const errs: number[] = [];
+  for (let i = cut; i < y.length; i++) errs.push(Math.abs(predict(beta, useCols(X[i]!, cols)) - y[i]!));
+  return medianOf(errs);
+}
+
 /** The range's tested coverage on the deployed columns: LOO, walk-forward and hold-out shares inside the printed bands. */
 function coverageReport(Xd: number[][], yd: number[], cols: number[], lambda: number): CoverageReport {
   const check = (pred: number, actual: number, sigma: number): [boolean, boolean] => [
@@ -707,6 +780,24 @@ export function fitModel(snapshot: Snapshot): FitReport {
   const ssRes = residuals.reduce((s, r) => s + r * r, 0);
   const loo = looMaeCols(Xb, yb, DEPLOYED, RIDGE_LAMBDA);
   const wf = walkForwardMaeCols(Xd, yd, DEPLOYED, RIDGE_LAMBDA);
+  // The median miss the winners headline: the same leave-one-out and
+  // walk-forward errors, summarised by their median instead of their mean,
+  // against the flat ratio baseline — plus the two walk-forward splits the
+  // winners report (train before 2024-02-28; newest 37 priced by the older 58).
+  const looErrs = looAbsErrors(Xb, yb, DEPLOYED, RIDGE_LAMBDA);
+  const wfErrs = walkForwardAbsErrors(Xd, yd, DEPLOYED, RIDGE_LAMBDA);
+  const flatErrs = flatRatioErrors(traded);
+  const looMed = medianOf(looErrs);
+  const wfMed = medianOf(wfErrs);
+  const flatMed = medianOf(flatErrs);
+  const silverCut = dated.findIndex((p) => p.listed_at! >= '2024-02-28');
+  const silverMed = prefixSplitMedian(Xd, yd, silverCut, DEPLOYED, RIDGE_LAMBDA);
+  const kevinMed = prefixSplitMedian(Xd, yd, 58, DEPLOYED, RIDGE_LAMBDA);
+  // Within 3× of the real cap: the share of the same leave-one-out errors at or
+  // under log10(3), for the fitted model and for the flat ratio baseline.
+  const log3 = Math.log10(3);
+  const within3 = looErrs.filter((e) => e <= log3).length / Math.max(1, looErrs.length);
+  const flatWithin3 = flatErrs.filter((e) => e <= log3).length / Math.max(1, flatErrs.length);
   const wfHand = walkForwardHandsetMae(dated, yd, snapshot.as_of);
   const hold = holdoutMaeCols(Xd, yd, DEPLOYED, RIDGE_LAMBDA);
   const cut = Math.floor(yd.length * 0.8);
@@ -825,6 +916,14 @@ export function fitModel(snapshot: Snapshot): FitReport {
     loo_mae: round4(loo),
     walkforward_mae: round4(wf),
     walkforward_handset_mae: round4(wfHand),
+    loo_med: round4(looMed),
+    loo_med_x: round2(Math.pow(10, looMed)),
+    flat_med_x: round2(Math.pow(10, flatMed)),
+    wf_med_x: round2(Math.pow(10, wfMed)),
+    split_silver_x: round2(Math.pow(10, silverMed)),
+    split_kevin_x: round2(Math.pow(10, kevinMed)),
+    within3: round4(within3),
+    flat_within3: round4(flatWithin3),
     holdout_n: hold.n,
     holdout_fitted_mae: round4(hold.fitted),
     holdout_handset_mae: round4(handMae),
@@ -909,6 +1008,37 @@ function looBrierRule(snapshot: Snapshot, y: number[]): number {
     s += (ruleOdds(snapshot.protocols[i]!, snapshot.as_of, rates) - y[i]!) ** 2;
   }
   return n === 0 ? 0 : s / n;
+}
+
+/** Rank quality of a set of leave-one-out odds: the share of launched/non-launched pairs the odds order correctly (ties count half). */
+function aucScore(probs: number[], y: number[]): number {
+  const pos: number[] = [];
+  const neg: number[] = [];
+  for (let i = 0; i < probs.length; i++) (y[i] === 1 ? pos : neg).push(probs[i]!);
+  if (pos.length === 0 || neg.length === 0) return 0;
+  let wins = 0;
+  for (const a of pos) for (const b of neg) wins += a > b ? 1 : a === b ? 0.5 : 0;
+  return wins / (pos.length * neg.length);
+}
+
+/** Leave-one-out odds under the rule and under the age bands: each protocol scored by the others' record. */
+function looOddsProbs(snapshot: Snapshot, y: number[]): { rule: number[]; age: number[] } {
+  const rule: number[] = [];
+  const age: number[] = [];
+  const counts = new Map<string, { launched: number; total: number }>();
+  for (const b of ['<1y', '1-2y', '2-3y', '3y+', 'unknown']) counts.set(b, { launched: 0, total: 0 });
+  for (const p of snapshot.protocols) {
+    const c = counts.get(ageBand(snapshot.as_of, p.listed_at))!;
+    c.total++;
+    if (hasToken(p)) c.launched++;
+  }
+  for (let i = 0; i < snapshot.protocols.length; i++) {
+    const train = snapshot.protocols.filter((_, j) => j !== i);
+    rule.push(ruleOdds(snapshot.protocols[i]!, snapshot.as_of, ruleRates(train, snapshot.as_of)));
+    const c = counts.get(ageBand(snapshot.as_of, snapshot.protocols[i]!.listed_at))!;
+    age.push((c.launched - y[i]! + 1) / (c.total - 1 + 2));
+  }
+  return { rule, age };
 }
 
 /** Walk-forward Brier of the rule odds: dated protocols ordered by listing date, each fold scored by the rule on the earlier folds. */
@@ -996,6 +1126,7 @@ export function tokenOdds(snapshot: Snapshot): OddsReport {
   const n = Math.max(1, snapshot.protocols.length);
   // The rule: full-fit rates on all 758 protocols, then the four tests.
   const y = snapshot.protocols.map((p) => (hasToken(p) ? 1 : 0));
+  const looProbs = looOddsProbs(snapshot, y);
   const fullRates = ruleRates(snapshot.protocols, snapshot.as_of);
   const datedIdx = snapshot.protocols
     .map((p, i) => i)
@@ -1026,6 +1157,8 @@ export function tokenOdds(snapshot: Snapshot): OddsReport {
       walkforward_brier: round4(walkForwardBrierRule(snapshot, y, datedIdx, 5)),
       walkforward4_brier: round4(walkForwardBrierRule(snapshot, y, datedIdx, 4)),
       walkforward3_brier: round4(walkForwardBrierRule(snapshot, y, datedIdx, 3)),
+      loo_auc: round4(aucScore(looProbs.rule, y)),
+      age_loo_auc: round4(aucScore(looProbs.age, y)),
       age_walkforward_brier: round4(walkForwardBrierAge(snapshot, y, datedIdx, 5)),
       age_walkforward4_brier: round4(walkForwardBrierAge(snapshot, y, datedIdx, 4)),
       age_walkforward3_brier: round4(walkForwardBrierAge(snapshot, y, datedIdx, 3)),
