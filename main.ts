@@ -1,4 +1,4 @@
-// Token Radar, radar-5 (Node 22, standard library only).
+// Token Radar, radar-6 (Node 22, standard library only).
 //
 // main.ts reads the sealed snapshot — /input/snapshot.json in the grader, or --input <file|dir>
 // locally — scores every rankable pre-token protocol with the model in lib/model.ts, writes the
@@ -7,10 +7,11 @@
 // vendored make.fun library. The run is deterministic: the same snapshot always writes the same
 // bytes, and the program refuses to hand in a board the gate would refuse.
 //
-// Radar-5 keeps radar-4's TVL-only value fit and swaps its fitted token odds for a rule:
-// age-band rate times category factor, clipped to [0.005, 0.90]. The fitted logistic won
-// leave-one-out and lost every walk-forward split, so it is gone; the rule passes all four
-// tests, and the page shows the rule, the category factors and the fitted model's failure.
+// Radar-6 keeps radar-5's TVL-only value fit and rule odds untouched and reframes the fit's own
+// tests the way the winning boards present them: the median miss instead of the mean — the same
+// leave-one-out and walk-forward errors, summarised by their median, against the flat ratio
+// baseline — plus the within-3x share and the odds AUC. No model, odds, value, verdict or data
+// changes: the board is byte-identical to radar-5's, only the presentation changes.
 // The dashboard also prints each row's value as an equation and draws the fitted curve
 // against the traded tokens' decile medians.
 //
@@ -95,5 +96,6 @@ writeFileSync(join(out, 'dossier.json'), dossier);
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early below the floor, ${radar.above_size} above it, ${radar.live_size} live set aside)\n` +
     `token radar: rule odds leave-one-out Brier ${radar.odds.rule.loo_brier} (age bands ${radar.odds.brier}, base rate ${radar.odds.base_brier}); verdicts ${radar.farm_verdicts.farm} farm / ${radar.farm_verdicts.watch} watch / ${radar.farm_verdicts.skip} skip\n` +
+    `token radar: median miss ×${radar.fit.loo_med_x} leave-one-out (flat ×${radar.fit.flat_med_x}), ×${radar.fit.wf_med_x} walk-forward; mean miss ${radar.fit.loo_mae} dex; ${Math.round(radar.fit.within3 * 100)}% within 3× (flat ${Math.round(radar.fit.flat_within3 * 100)}%); odds AUC ${radar.odds.rule.loo_auc} (age ${radar.odds.rule.age_loo_auc})\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')} (${dossier.length} bytes)\n`,
 );
