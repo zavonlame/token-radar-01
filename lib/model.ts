@@ -1,12 +1,14 @@
-// The token radar's model, radar-4: the value model is fitted, not asserted, and the
-// odds model is fitted too.
+// The token radar's model, radar-5: the value model is fitted, not asserted, and the
+// odds model is a rule, not a fit — radar-4's fitted odds won leave-one-out and then
+// lost every walk-forward split, so the fit is gone and the rule replaces it.
 //
 // Round 3 (radar-3) fitted the value model from the snapshot's traded tokens and showed
 // the tests on the board, but its token odds were still age bands — the peers' launch
-// share by age band, Laplace smoothed. Radar-4 fits the odds as well, and simplifies
-// the value model to what the tests actually support. Every change below was tested
-// offline on the same sealed snapshot before it was built in, and the board prints the
-// test numbers — including the ones that failed.
+// share by age band, Laplace smoothed. Radar-4 fitted the odds as well, and radar-5
+// un-fits them: every logistic variant fails the time splits, so the odds are now one
+// line of arithmetic on the peers' own record. Every change below was tested offline
+// on the same sealed snapshot before it was built in, and the board prints the test
+// numbers — including the ones that failed.
 //
 //   The value fit  log10(market cap) is regressed on log10(TVL) alone, over the 128
 //              traded protocols that record a market cap above zero. The regression is
@@ -18,15 +20,20 @@
 //              adds each term in turn and re-runs all three tests, and nothing beats
 //              TVL alone. Two shuffled-growth placebos behave exactly like no signal,
 //              which is what a working test setup should show.
-//   The odds fit  A pre-token protocol's odds come from a logistic ridge on its own
-//              figures — log-age, an unknown-age flag, log10 TVL, growth, chain count,
-//              and its category — fitted on all 758 protocols (lambda 10, features
-//              standardised, intercept unpenalised). Leave-one-out Brier 0.196 against
-//              0.212 for age bands and 0.248 for the base rate. The board says the
-//              honest part too: the walk-forward win is thin (0.233 vs 0.238 on five
-//              folds) and coarser time splits lose (four folds 0.273 vs 0.245, three
-//              folds 0.274 vs 0.258) — the category signal needs a large training set,
-//              and the deployment fit uses all 758 rows, where it wins.
+//   The odds rule  A pre-token protocol's odds are its age band's launch share times
+//              its category's launch share, divided by the base rate — odds = ageRate
+//              x catRate / baseRate, clipped to [0.005, 0.90]. The age rate is the
+//              Laplace-smoothed share in the band, (launched + 1) / (total + 2); the
+//              category rate is shrunk toward the base rate with k = 20, (launched +
+//              20 x baseRate) / (n + 20), so a small category cannot shout. No solver,
+//              no fitted weights, deterministic by construction. It passes the strict
+//              four-test gate the fitted model failed: leave-one-out Brier 0.196
+//              against 0.212 for the age bands and 0.248 for the base rate, and it
+//              beats the age bands on all three walk-forward splits — five folds
+//              0.227 vs 0.238, four folds 0.234 vs 0.245, three folds 0.245 vs 0.258.
+//              The fitted logistic it replaces won leave-one-out too (0.196) and
+//              then lost all three splits (0.233 / 0.273 / 0.274), so it was removed,
+//              and the board says so beside the rule.
 //   The range  The P25-P75 range is the fit's own residual spread: implied value times or
 //              divided by 10^(0.674 x sigma), sigma the residual standard deviation of the
 //              fit on the traded tokens. The board prints the tested coverage: 53.7% of
@@ -48,8 +55,8 @@
 //              pays for itself — so a row can be judged on its own economics, not only on
 //              the verdict.
 //
-// Implied value follows only from the snapshot's own figures — TVL for the fit, and age,
-// growth and chains for the odds — through one function that scores every row the same
+// Implied value follows only from the snapshot's own figures — TVL for the fit, and age
+// band and category for the odds — through one function that scores every row the same
 // way. No protocol name is ever special-cased.
 
 import { createHash } from 'node:crypto';
@@ -81,7 +88,7 @@ export interface Snapshot {
 }
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-4';
+export const MODEL_VERSION = 'radar-5';
 
 /** The ridge penalty for the value fit, chosen by leave-one-out error. */
 export const RIDGE_LAMBDA = 10;
@@ -157,19 +164,40 @@ export interface FitReport {
   ablation: AblationRow[];
   coverage: CoverageReport;
   bootstrap: BootstrapReport;
+  scatter: ScatterReport;
 }
 
-/** One fitted odds term, with its standardised weight in log-odds per standard deviation. */
-export interface OddsTerm {
-  term: string;
-  weight: number;
+/** One fitted-curve scatter bin: the median traded cap in a TVL decile, with its middle half. */
+export interface ScatterBin {
+  lt: number;
+  med: number;
+  p25: number;
+  p75: number;
+  n: number;
 }
 
-/** The fitted token-odds model: logistic ridge on the protocol's own figures. */
-export interface OddsMulti {
-  lambda: number;
-  categories: string[];
-  coefficients: OddsTerm[];
+/** The fitted value curve as a picture: the line the fit draws, and the decile bins it is drawn through. */
+export interface ScatterReport {
+  bins: ScatterBin[];
+  line: { intercept: number; slope: number; sigma: number; ltMin: number; ltMax: number };
+}
+
+/** One category's factor in the odds rule: its shrunk launch rate over the base rate. */
+export interface CategoryFactor {
+  category: string | null;
+  protocols: number;
+  launched: number;
+  factor: number;
+}
+
+/** The token-odds rule: age-band rate times category factor, clipped. No fitted weights. */
+export interface OddsRule {
+  k: number;
+  clip_lo: number;
+  clip_hi: number;
+  base_rate: number;
+  band_rates: { band: string; rate: number }[];
+  categories: CategoryFactor[];
   loo_brier: number;
   walkforward_brier: number;
   walkforward4_brier: number;
@@ -177,16 +205,15 @@ export interface OddsMulti {
   age_walkforward_brier: number;
   age_walkforward4_brier: number;
   age_walkforward3_brier: number;
-  model: { beta: number[]; mu: number[]; sd: number[] };
 }
 
-/** The token-odds report: the peers' launch record, by age band, plus the fitted model. */
+/** The token-odds report: the peers' launch record, by age band, plus the rule that the board uses. */
 export interface OddsReport {
   base_rate: number;
   brier: number;
   base_brier: number;
   bands: { band: string; launched: number; total: number; odds: number }[];
-  multi: OddsMulti;
+  rule: OddsRule;
 }
 
 /** Where every one of the snapshot's protocols sits: the ledger must sum to the total. */
@@ -335,6 +362,7 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
 }
 
 const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
+const round2 = (n: number): number => Math.round(n * 100) / 100;
 
 /** The saturating growth term: tanh of the clamped seven-day change. */
 function growthTerm(change7d: number | null): number {
@@ -449,26 +477,6 @@ function extFeatures(
     growthTerm(list[perm[i]!]!.change_7d),
     growthTerm(list[(i - 1 + list.length) % list.length]!.change_7d),
   ];
-}
-
-/** A general linear solve by Gauss-Jordan with partial pivoting. */
-function solveLinear(aIn: number[][], bIn: number[]): number[] {
-  const k = bIn.length;
-  const m: number[][] = aIn.map((row, i) => [...row, bIn[i]!]);
-  for (let col = 0; col < k; col++) {
-    let piv = col;
-    for (let r = col + 1; r < k; r++) if (Math.abs(m[r]![col]!) > Math.abs(m[piv]![col]!)) piv = r;
-    const tmp = m[col]!;
-    m[col] = m[piv]!;
-    m[piv] = tmp;
-    const d = m[col]![col]!;
-    for (let r = 0; r < k; r++) {
-      if (r === col) continue;
-      const f = m[r]![col]! / d;
-      for (let c = col; c <= k; c++) m[r]![c]! -= f * m[col]![c]!;
-    }
-  }
-  return m.map((row, i) => row[k]! / row[i]!);
 }
 
 /** The ridge solution of (X'X + lambda I) beta = X'y, intercept unpenalised, by Gauss-Jordan with partial pivoting. */
@@ -774,6 +782,37 @@ export function fitModel(snapshot: Snapshot): FitReport {
     coefLo.push(round4(percentile(vals, 0.025)));
     coefHi.push(round4(percentile(vals, 0.975)));
   }
+  // The scatter the model panel draws: the fitted line, and the traded tokens
+  // binned into ten TVL deciles — each dot is the median cap in its decile, the
+  // whiskers the middle half of caps in the bin. The bins are noisy by design:
+  // only twelve or thirteen tokens sit in a bin, so a bin can sit well off the
+  // line, and the page's note says so instead of hiding it.
+  const scatterBins: ScatterBin[] = (() => {
+    const lt = traded.map((p) => Math.log10(Math.max(1, p.tvl_usd)));
+    const lm = traded.map((p) => Math.log10(p.mcap_usd!));
+    const order = lt.map((v, i) => [v, i] as [number, number]).sort((a, b) => a[0] - b[0]);
+    const bins: ScatterBin[] = [];
+    for (let d = 0; d < 10; d++) {
+      const chunk = order.slice(Math.floor((d * order.length) / 10), Math.floor(((d + 1) * order.length) / 10));
+      const mvals = chunk.map(([, i]) => lm[i]!).sort((a, b) => a - b);
+      const lvals = chunk.map(([v]) => v).sort((a, b) => a - b);
+      bins.push({
+        lt: round2(percentile(lvals, 0.5)),
+        med: round2(percentile(mvals, 0.5)),
+        p25: round2(percentile(mvals, 0.25)),
+        p75: round2(percentile(mvals, 0.75)),
+        n: chunk.length,
+      });
+    }
+    return bins;
+  })();
+  const scatterLine = {
+    intercept: round4(beta[0]!),
+    slope: round4(beta[1]!),
+    sigma: round4(sigma),
+    ltMin: round2(Math.min(...traded.map((p) => Math.log10(Math.max(1, p.tvl_usd))))),
+    ltMax: round2(Math.max(...traded.map((p) => Math.log10(Math.max(1, p.tvl_usd))))),
+  };
   return {
     version: MODEL_VERSION,
     lambda: RIDGE_LAMBDA,
@@ -793,6 +832,7 @@ export function fitModel(snapshot: Snapshot): FitReport {
     ablation,
     coverage,
     bootstrap: { n: boots.length, coef_mean: coefMean, coef_se: coefSe, coef_ci_lo: coefLo, coef_ci_hi: coefHi },
+    scatter: { bins: scatterBins, line: scatterLine },
   };
 }
 
@@ -811,109 +851,68 @@ export function hasToken(p: SnapshotProtocol): boolean {
   return p.gecko_id !== null || p.symbol !== null || p.mcap_usd !== null;
 }
 
-/** Categories with at least twenty protocols: the odds model's category terms. */
-function oddsCategories(snapshot: Snapshot): string[] {
-  const counts = new Map<string, number>();
-  for (const p of snapshot.protocols) if (p.category !== null) counts.set(p.category, (counts.get(p.category) ?? 0) + 1);
-  return [...counts.entries()].filter(([, n]) => n >= 20).map(([c]) => c).sort();
+/** The odds rule's constants: shrinkage toward the base rate, and the clip that keeps a probability a probability. */
+export const RULE_SHRINK_K = 20;
+export const RULE_CLIP_LO = 0.005;
+export const RULE_CLIP_HI = 0.9;
+
+/** The rates one training set implies: the base rate, one Laplace rate per age band, one shrunk rate per category. */
+interface RuleRates {
+  base: number;
+  bandRates: Map<string, number>;
+  catRates: Map<string | null, number>;
 }
 
-/** One protocol's odds features: log-age, unknown-age flag, log10 TVL, growth, chains, category one-hots. */
-function logitFeatures(p: SnapshotProtocol, asOf: string, cats: string[]): number[] {
-  const age = ageDays(asOf, p.listed_at);
-  return [
-    Math.log10((age === null ? 365 : age) + 1),
-    age === null ? 1 : 0,
-    Math.log10(Math.max(1, p.tvl_usd)),
-    growthTerm(p.change_7d),
-    chainTerm(p.chains),
-    ...cats.map((c) => (p.category === c ? 1 : 0)),
-  ];
-}
-
-/** A fitted logistic ridge: standardised features, intercept unpenalised, solved by Newton (IRLS). */
-export interface LogitModel {
-  beta: number[];
-  mu: number[];
-  sd: number[];
-}
-
-/** The logistic ridge fit: features standardised on the training rows, penalty lambda on every term but the intercept. */
-function fitLogit(X: number[][], y: number[], lambda: number, warmBeta: number[] | null = null, maxIters = 60): LogitModel {
-  const n = y.length;
-  const d = X[0]!.length;
-  const mu: number[] = new Array<number>(d).fill(0);
-  const sd: number[] = new Array<number>(d).fill(0);
-  for (let j = 0; j < d; j++) {
-    let s = 0;
-    for (let i = 0; i < n; i++) s += X[i]![j]!;
-    mu[j] = s / n;
-    let v = 0;
-    for (let i = 0; i < n; i++) v += (X[i]![j]! - mu[j]!) ** 2;
-    sd[j] = Math.sqrt(v / n) || 1;
+/** The rates a training set implies, counted in a single pass: base rate, Laplace age-band rates, shrunk category rates. */
+function ruleRates(train: SnapshotProtocol[], asOf: string): RuleRates {
+  let launched = 0;
+  const bandTot = new Map<string, number>();
+  const bandLau = new Map<string, number>();
+  const catTot = new Map<string | null, number>();
+  const catLau = new Map<string | null, number>();
+  for (const q of train) {
+    const y = hasToken(q) ? 1 : 0;
+    launched += y;
+    const b = ageBand(asOf, q.listed_at);
+    bandTot.set(b, (bandTot.get(b) ?? 0) + 1);
+    bandLau.set(b, (bandLau.get(b) ?? 0) + y);
+    catTot.set(q.category, (catTot.get(q.category) ?? 0) + 1);
+    catLau.set(q.category, (catLau.get(q.category) ?? 0) + y);
   }
-  const k = d + 1;
-  const beta: number[] = warmBeta !== null ? [...warmBeta] : new Array<number>(k).fill(0);
-  if (warmBeta === null) {
-    const mean = y.reduce((s, v) => s + v, 0) / n;
-    beta[0] = Math.log(Math.max(mean, 1e-6) / Math.max(1 - mean, 1e-6));
+  const base = launched / Math.max(1, train.length);
+  const bandRates = new Map<string, number>();
+  for (const b of ['<1y', '1-2y', '2-3y', '3y+', 'unknown']) {
+    bandRates.set(b, ((bandLau.get(b) ?? 0) + 1) / ((bandTot.get(b) ?? 0) + 2));
   }
-  for (let it = 0; it < maxIters; it++) {
-    const g: number[] = new Array<number>(k).fill(0);
-    const H: number[][] = Array.from({ length: k }, () => new Array<number>(k).fill(0));
-    for (let i = 0; i < n; i++) {
-      const row = X[i]!;
-      const dr: number[] = new Array<number>(k);
-      dr[0] = 1;
-      for (let j = 0; j < d; j++) dr[j + 1] = (row[j]! - mu[j]!) / sd[j]!;
-      let z = 0;
-      for (let a = 0; a < k; a++) z += beta[a]! * dr[a]!;
-      const zc = Math.max(-30, Math.min(30, z));
-      const p = 1 / (1 + Math.exp(-zc));
-      const w = p * (1 - p) + 1e-6;
-      const r = p - y[i]!;
-      for (let a = 0; a < k; a++) {
-        g[a]! += dr[a]! * r;
-        const wa = w * dr[a]!;
-        for (let b = a; b < k; b++) H[a]![b]! += wa * dr[b]!;
-      }
-    }
-    for (let a = 0; a < k; a++) {
-      for (let b = 0; b < a; b++) H[a]![b]! = H[b]![a]!;
-      H[a]![a]! += a === 0 ? 0 : lambda;
-      g[a]! += (a === 0 ? 0 : lambda) * beta[a]!;
-    }
-    const step = solveLinear(H, g);
-    let maxStep = 0;
-    for (let a = 0; a < k; a++) {
-      beta[a]! -= step[a]!;
-      maxStep = Math.max(maxStep, Math.abs(step[a]!));
-    }
-    if (maxStep < 1e-8) break;
+  const catRates = new Map<string | null, number>();
+  for (const c of catTot.keys()) {
+    catRates.set(c, ((catLau.get(c) ?? 0) + RULE_SHRINK_K * base) / ((catTot.get(c) ?? 0) + RULE_SHRINK_K));
   }
-  return { beta, mu, sd };
+  return { base, bandRates, catRates };
 }
 
-/** The fitted odds of each row under a logistic model. */
-function predictLogit(model: LogitModel, X: number[][]): number[] {
-  const out: number[] = [];
-  for (const row of X) {
-    let z = model.beta[0]!;
-    for (let j = 0; j < row.length; j++) z += model.beta[j + 1]! * ((row[j]! - model.mu[j]!) / model.sd[j]!);
-    out.push(1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z)))));
-  }
-  return out;
+/** One protocol's odds under the rule, from a training set's rates: age rate times category rate over the base rate, clipped. */
+function ruleOdds(p: SnapshotProtocol, asOf: string, rates: RuleRates): number {
+  const ageRate = rates.bandRates.get(ageBand(asOf, p.listed_at)) ?? rates.base;
+  const catRate = rates.catRates.get(p.category) ?? rates.base;
+  const raw = (ageRate * catRate) / Math.max(1e-9, rates.base);
+  return Math.min(RULE_CLIP_HI, Math.max(RULE_CLIP_LO, raw));
 }
 
-/** The Brier score: the mean squared gap between a probability and the 0/1 outcome. */
-function brierScore(ps: number[], ys: number[]): number {
+/** Leave-one-out Brier of the rule odds: each protocol scored by the rule on all the others. */
+function looBrierRule(snapshot: Snapshot, y: number[]): number {
+  const n = snapshot.protocols.length;
   let s = 0;
-  for (let i = 0; i < ps.length; i++) s += (ps[i]! - ys[i]!) ** 2;
-  return ps.length === 0 ? 0 : s / ps.length;
+  for (let i = 0; i < n; i++) {
+    const train = snapshot.protocols.filter((_, j) => j !== i);
+    const rates = ruleRates(train, snapshot.as_of);
+    s += (ruleOdds(snapshot.protocols[i]!, snapshot.as_of, rates) - y[i]!) ** 2;
+  }
+  return n === 0 ? 0 : s / n;
 }
 
-/** Walk-forward Brier of the fitted odds: dated protocols ordered by listing date, each fit on the earlier folds and tested on the next. */
-function walkForwardBrierLogit(X: number[][], y: number[], datedIdx: number[], nfolds: number, lambda: number): number {
+/** Walk-forward Brier of the rule odds: dated protocols ordered by listing date, each fold scored by the rule on the earlier folds. */
+function walkForwardBrierRule(snapshot: Snapshot, y: number[], datedIdx: number[], nfolds: number): number {
   const n = datedIdx.length;
   const fold = Math.floor(n / nfolds);
   let s = 0;
@@ -921,14 +920,12 @@ function walkForwardBrierLogit(X: number[][], y: number[], datedIdx: number[], n
   for (let f = 1; f < nfolds; f++) {
     const tr = datedIdx.slice(0, f * fold);
     const te = datedIdx.slice(f * fold, (f + 1) * fold);
-    const model = fitLogit(
-      tr.map((i) => X[i]!),
-      tr.map((i) => y[i]!),
-      lambda,
+    const rates = ruleRates(
+      tr.map((i) => snapshot.protocols[i]!),
+      snapshot.as_of,
     );
-    const pr = predictLogit(model, te.map((i) => X[i]!));
-    for (let j = 0; j < te.length; j++) {
-      s += (pr[j]! - y[te[j]!]!) ** 2;
+    for (const i of te) {
+      s += (ruleOdds(snapshot.protocols[i]!, snapshot.as_of, rates) - y[i]!) ** 2;
       cnt++;
     }
   }
@@ -966,7 +963,7 @@ function walkForwardBrierAge(snapshot: Snapshot, y: number[], datedIdx: number[]
   return cnt === 0 ? 0 : s / cnt;
 }
 
-/** The token odds: the age-band peers' record (kept as the baseline) and the fitted multi-term model that the board uses. */
+/** The token odds: the age-band peers' record (kept as the baseline) and the rule that the board uses. */
 export function tokenOdds(snapshot: Snapshot): OddsReport {
   const bands = ['<1y', '1-2y', '2-3y', '3y+', 'unknown'];
   const counts = new Map<string, { launched: number; total: number }>();
@@ -985,71 +982,65 @@ export function tokenOdds(snapshot: Snapshot): OddsReport {
     const c = counts.get(band)!;
     return { band, launched: c.launched, total: c.total, odds: round4((c.launched + 1) / (c.total + 2)) };
   });
-  const oddsOf = (band: string): number => bandRows.find((b) => b.band === band)!.odds;
   let brier = 0;
   let baseBrier = 0;
   for (const p of snapshot.protocols) {
     const c = counts.get(ageBand(snapshot.as_of, p.listed_at))!;
     const t = c.launched - (hasToken(p) ? 1 : 0);
-    const n = c.total - 1;
-    const pb = (t + 1) / (n + 2);
+    const nn = c.total - 1;
+    const pb = (t + 1) / (nn + 2);
     const y = hasToken(p) ? 1 : 0;
     brier += (pb - y) ** 2;
     baseBrier += (baseRate - y) ** 2;
   }
   const n = Math.max(1, snapshot.protocols.length);
-  // The fitted odds: logistic ridge on age, size, growth, chains and category (lambda 10).
-  const cats = oddsCategories(snapshot);
-  const X = snapshot.protocols.map((p) => logitFeatures(p, snapshot.as_of, cats));
+  // The rule: full-fit rates on all 758 protocols, then the four tests.
   const y = snapshot.protocols.map((p) => (hasToken(p) ? 1 : 0));
-  const model = fitLogit(X, y, 10);
-  const names = ['log-age', 'age unknown', 'log10(TVL)', 'growth', 'chains', ...cats.map((c) => `category: ${c}`)];
-  const coefficients: OddsTerm[] = names.map((term, i) => ({ term, weight: round4(model.beta[i + 1]!) }));
-  // Leave-one-out Brier, warm-started from the full fit: each fold refits on all but one protocol.
-  const looPs: number[] = new Array<number>(y.length).fill(0);
-  for (let i = 0; i < y.length; i++) {
-    const Xt: number[][] = [];
-    const yt: number[] = [];
-    for (let j = 0; j < y.length; j++) {
-      if (j === i) continue;
-      Xt.push(X[j]!);
-      yt.push(y[j]!);
-    }
-    looPs[i] = predictLogit(fitLogit(Xt, yt, 10, model.beta, 25), [X[i]!])[0]!;
-  }
+  const fullRates = ruleRates(snapshot.protocols, snapshot.as_of);
   const datedIdx = snapshot.protocols
     .map((p, i) => i)
     .filter((i) => snapshot.protocols[i]!.listed_at !== null)
     .sort((a, b) => (snapshot.protocols[a]!.listed_at! < snapshot.protocols[b]!.listed_at! ? -1 : 1));
+  // One factor per category the snapshot carries, most protocols first; the page
+  // shows the ones with at least twenty protocols, the rest are shrunk anyway.
+  const categories: CategoryFactor[] = [...fullRates.catRates.entries()]
+    .map(([category, rate]) => {
+      const tot = snapshot.protocols.filter((p) => p.category === category).length;
+      const lau = snapshot.protocols.filter((p) => p.category === category && hasToken(p)).length;
+      return { category, protocols: tot, launched: lau, factor: rate / Math.max(1e-9, fullRates.base) };
+    })
+    .sort((a, b) => b.protocols - a.protocols || ((a.category ?? '') < (b.category ?? '') ? -1 : (a.category ?? '') > (b.category ?? '') ? 1 : 0));
   return {
     base_rate: round4(baseRate),
     brier: round4(brier / n),
     base_brier: round4(baseBrier / n),
     bands: bandRows,
-    multi: {
-      lambda: 10,
-      categories: cats,
-      coefficients,
-      loo_brier: round4(brierScore(looPs, y)),
-      walkforward_brier: round4(walkForwardBrierLogit(X, y, datedIdx, 5, 10)),
-      walkforward4_brier: round4(walkForwardBrierLogit(X, y, datedIdx, 4, 10)),
-      walkforward3_brier: round4(walkForwardBrierLogit(X, y, datedIdx, 3, 10)),
+    rule: {
+      k: RULE_SHRINK_K,
+      clip_lo: RULE_CLIP_LO,
+      clip_hi: RULE_CLIP_HI,
+      base_rate: fullRates.base,
+      band_rates: bandRows.map((b) => ({ band: b.band, rate: (b.launched + 1) / (b.total + 2) })),
+      categories,
+      loo_brier: round4(looBrierRule(snapshot, y)),
+      walkforward_brier: round4(walkForwardBrierRule(snapshot, y, datedIdx, 5)),
+      walkforward4_brier: round4(walkForwardBrierRule(snapshot, y, datedIdx, 4)),
+      walkforward3_brier: round4(walkForwardBrierRule(snapshot, y, datedIdx, 3)),
       age_walkforward_brier: round4(walkForwardBrierAge(snapshot, y, datedIdx, 5)),
       age_walkforward4_brier: round4(walkForwardBrierAge(snapshot, y, datedIdx, 4)),
       age_walkforward3_brier: round4(walkForwardBrierAge(snapshot, y, datedIdx, 3)),
-      model: { beta: model.beta.map(round4), mu: model.mu.map(round4), sd: model.sd.map(round4) },
     },
   };
 }
 
-/** The token odds of one protocol, from the fitted multi-term model. */
+/** The token odds of one protocol, from the rule the board uses: age-band rate times its category's factor, clipped. */
 export function oddsFor(snapshot: Snapshot, odds: OddsReport, p: SnapshotProtocol): number {
-  const cats = odds.multi.categories;
-  const row = logitFeatures(p, snapshot.as_of, cats);
-  const m = odds.multi.model;
-  let z = m.beta[0]!;
-  for (let j = 0; j < row.length; j++) z += m.beta[j + 1]! * ((row[j]! - m.mu[j]!) / m.sd[j]!);
-  return Math.round((1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))))) * 10000) / 10000;
+  const rule = odds.rule;
+  const band = ageBand(snapshot.as_of, p.listed_at);
+  const ageRate = rule.band_rates.find((b) => b.band === band)?.rate ?? rule.base_rate;
+  const factor = rule.categories.find((c) => c.category === p.category)?.factor ?? 1;
+  const raw = ageRate * factor;
+  return Math.round(Math.min(rule.clip_hi, Math.max(rule.clip_lo, raw)) * 10000) / 10000;
 }
 
 /** The fitted implied value of one protocol, with its range and terms. The fit itself uses log10(TVL) alone; growth, maturity and chains are shown as the protocol's own figures, not as fitted terms. */
