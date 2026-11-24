@@ -101,6 +101,7 @@
     <p class="sub">One function scores every protocol, from the snapshot's own figures. No protocol name is special-cased, and no row is hand-picked. The coefficients below are fitted from the snapshot's own traded tokens — the program refits them every run — not chosen by hand.</p>
     <div class="formula" id="formula"></div>
     <div class="model-grid" id="model-grid"></div>
+    <div class="scatter-wrap"><div id="scatter"></div><p class="sub" id="scatter-note"></p></div>
     <h3>What the tests say — ablation, placebo and coverage</h3>
     <div class="table-wrap slim">
       <table class="mini" id="terms-table">
@@ -112,16 +113,16 @@
     <h3>Token odds — the peers' record</h3>
     <div class="table-wrap slim">
       <table class="mini" id="odds-table">
-        <caption class="sub">Share of all 758 protocols in each age band that have a token, Laplace smoothed. The age-band baseline the fitted model is judged against — not the model itself.</caption>
+        <caption class="sub">Share of all 758 protocols in each age band that have a token, Laplace smoothed. The age-band rates the rule multiplies by its category factor.</caption>
         <thead><tr><th scope="col">Age band</th><th scope="col">Have a token</th><th scope="col">Protocols</th><th scope="col">Token odds</th></tr></thead>
         <tbody id="odds-body"></tbody>
       </table>
     </div>
-    <h3>Token odds — fitted, and where it fails</h3>
+    <h3>Token odds — a rule, and the fit it replaces</h3>
     <div class="table-wrap slim">
       <table class="mini" id="odds-coefs-table">
-        <caption class="sub">Logistic ridge (λ 10) on age, size, growth, chains and category, fitted to all 758 protocols. The board uses these odds, not the age-band rate.</caption>
-        <thead><tr><th scope="col">Term</th><th scope="col">Weight</th></tr></thead>
+        <caption class="sub">Age-band rate × category factor (shrunk k=20), clipped to [0.005, 0.90]. Categories with at least twenty protocols; smaller ones are shrunk toward the base rate. The board uses these odds, not the age-band rate.</caption>
+        <thead><tr><th scope="col">Category</th><th scope="col">Protocols</th><th scope="col">Have a token</th><th scope="col">Factor</th></tr></thead>
         <tbody id="odds-coefs-body"></tbody>
       </table>
     </div>
@@ -130,7 +131,7 @@
   </section>
 
   <footer class="foot">
-    <p>Implied value is this entry's own claim, never make.fun's. A protocol "records no token" when DefiLlama's record carries no token for it — that is the record, not proof it has none. Token odds are a fitted logistic model on age, size, growth, chains and category, shown with the time splits where it fails. Miss is mean absolute error in log10(market cap): 0.70 dex means the typical fitted value sits within a factor of about 5 of a traded token's actual market cap. Source: the sealed DefiLlama snapshot; the board is rebuilt from it by one program, and the page recomputes every row from the same fitted model.</p>
+    <p>Implied value is this entry's own claim, never make.fun's. A protocol "records no token" when DefiLlama's record carries no token for it — that is the record, not proof it has none. Token odds are a rule on age band and category, shown with the four tests it passes and the fitted model it replaces. Miss is mean absolute error in log10(market cap): 0.70 dex means the typical fitted value sits within a factor of about 5 of a traded token's actual market cap. Source: the sealed DefiLlama snapshot; the board is rebuilt from it by one program, and the page recomputes every row from the same fitted model.</p>
   </footer>
 </div>
 

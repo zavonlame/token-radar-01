@@ -144,11 +144,18 @@
   }
 
   // ---- DOM helpers ------------------------------------------------------------------
+  // SVG tags need the SVG namespace: document.createElement('svg') makes an HTML
+  // unknown element that never renders. className is a plain string only on HTML
+  // elements, so SVG classes go through setAttribute.
+  var SVG_TAGS = { svg: true, path: true, line: true, circle: true };
   function el(tag, attrs) {
-    var node = document.createElement(tag);
+    var node = SVG_TAGS[tag] ? document.createElementNS('http://www.w3.org/2000/svg', tag) : document.createElement(tag);
     if (attrs) {
       Object.keys(attrs).forEach(function (k) {
-        if (k === 'class') node.className = attrs[k];
+        if (k === 'class') {
+          if (SVG_TAGS[tag]) node.setAttribute('class', attrs[k]);
+          else node.className = attrs[k];
+        }
         else if (k === 'text') node.textContent = attrs[k];
         else if (k === 'html') node.innerHTML = attrs[k];
         else if (k.slice(0, 2) === 'on') node.addEventListener(k.slice(2), attrs[k]);
@@ -176,7 +183,7 @@
     kpis.appendChild(el('div', { class: 'kpi' }, el('span', { text: 'Total implied value' }), el('b', { text: fmtUsd(DATA.total_implied_usd) })));
     kpis.appendChild(el('div', { class: 'kpi' }, el('span', { text: 'Walk-forward miss (out-of-sample)' }), el('b', { text: '×/÷ ' + Math.pow(10, f.walkforward_mae).toFixed(1) })));
     kpis.appendChild(el('div', { class: 'kpi' }, el('span', { text: 'Held-out miss vs hand-set model' }), el('b', { text: f.holdout_fitted_mae.toFixed(2) + ' vs ' + f.holdout_handset_mae.toFixed(2) })));
-    kpis.appendChild(el('div', { class: 'kpi' }, el('span', { text: 'Token odds Brier, fitted vs base rate' }), el('b', { text: DATA.odds.multi.loo_brier.toFixed(3) + ' vs ' + DATA.odds.base_brier.toFixed(3) })));
+    kpis.appendChild(el('div', { class: 'kpi' }, el('span', { text: 'Token odds Brier, rule vs base rate' }), el('b', { text: DATA.odds.rule.loo_brier.toFixed(3) + ' vs ' + DATA.odds.base_brier.toFixed(3) })));
     kpis.appendChild(el('div', { class: 'kpi' }, el('span', { text: 'Farm verdicts' }), el('b', { text: DATA.farm_verdicts.farm + ' farm · ' + DATA.farm_verdicts.watch + ' watch · ' + DATA.farm_verdicts.skip + ' skip' })));
     var facts = document.getElementById('facts');
     facts.appendChild(el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })));
@@ -233,19 +240,34 @@
       el('td', { class: 'num', text: '' }),
       el('td', { class: 'num', text: Math.round(DATA.odds.base_rate * 100) + '%' })
     ));
-    var multi = DATA.odds.multi;
+    var rule = DATA.odds.rule;
     var coefsBody = document.getElementById('odds-coefs-body');
-    coefsBody.appendChild(el('tr', null,
-      el('td', { text: 'Intercept' }),
-      el('td', { class: 'num', text: (multi.model.beta[0] >= 0 ? '+' : '') + multi.model.beta[0].toFixed(3) })
-    ));
-    multi.coefficients.forEach(function (c) {
+    rule.categories.forEach(function (c) {
+      if (c.protocols < 20) return;
       coefsBody.appendChild(el('tr', null,
-        el('td', { text: c.term }),
-        el('td', { class: 'num', text: (c.weight >= 0 ? '+' : '') + c.weight.toFixed(3) })
+        el('td', { text: c.category === null ? '(no category)' : c.category }),
+        el('td', { class: 'num', text: String(c.protocols) }),
+        el('td', { class: 'num', text: String(c.launched) }),
+        el('td', { class: 'num', text: '×' + c.factor.toFixed(2) })
       ));
     });
-    document.getElementById('odds-note').textContent = 'Leave-one-out Brier ' + multi.loo_brier.toFixed(3) + ' against ' + DATA.odds.base_brier.toFixed(3) + ' for the base rate and ' + DATA.odds.brier.toFixed(3) + ' for the age bands — the fitted model wins in-sample, and the category terms drive it (CEX −0.57, Dexs +0.34, Lending +0.30, Risk Curators −0.39). But the walk-forward splits fail: on the last fifth the fitted model scores ' + multi.walkforward_brier.toFixed(3) + ' against ' + multi.age_walkforward_brier.toFixed(3) + ' for the age bands, on the last quarter ' + multi.walkforward4_brier.toFixed(3) + ' against ' + multi.age_walkforward4_brier.toFixed(3) + ', on the last third ' + multi.walkforward3_brier.toFixed(3) + ' against ' + multi.age_walkforward3_brier.toFixed(3) + '. The category signal does not carry forward in time, so these odds are used with that failure on the page — a row\u2019s verdict is a point estimate, not a forecast.';
+    document.getElementById('odds-note').textContent = 'Token odds are a rule, not a fit: age-band rate × category factor, clipped to [0.005, 0.90]. Leave-one-out Brier ' + rule.loo_brier.toFixed(3) + ' against ' + DATA.odds.base_brier.toFixed(3) + ' for the base rate and ' + DATA.odds.brier.toFixed(3) + ' for the age bands — and it beats the age bands on every walk-forward split: five folds ' + rule.walkforward_brier.toFixed(3) + ' against ' + rule.age_walkforward_brier.toFixed(3) + ', four folds ' + rule.walkforward4_brier.toFixed(3) + ' against ' + rule.age_walkforward4_brier.toFixed(3) + ', three folds ' + rule.walkforward3_brier.toFixed(3) + ' against ' + rule.age_walkforward3_brier.toFixed(3) + '. The fitted logistic it replaces won leave-one-out too (0.196) and then lost all three splits (0.233 / 0.273 / 0.274), so the fit was removed: a category signal that does not carry forward in time is not a model. A row\u2019s verdict is a point estimate, not a forecast.';
+    // Scatter: fitted line + band + decile medians, from DATA.fit.scatter.
+    var sc = DATA.fit.scatter;
+    var svg = el('svg', { class: 'scatter', viewBox: '0 0 460 300', role: 'img' });
+    var X0 = 40, X1 = 450, Y0 = 10, Y1 = 270;
+    var ltMin = sc.line.ltMin, ltMax = sc.line.ltMax, lmMin = 5.4, lmMax = 10.6;
+    var sx = function (v) { return X0 + (v - ltMin) / (ltMax - ltMin) * (X1 - X0); };
+    var sy = function (v) { return Y1 - (v - lmMin) / (lmMax - lmMin) * (Y1 - Y0); };
+    var band = 'M' + sx(ltMin) + ',' + sy(sc.line.intercept + sc.line.slope * ltMin + 0.674 * sc.line.sigma) + ' L' + sx(ltMax) + ',' + sy(sc.line.intercept + sc.line.slope * ltMax + 0.674 * sc.line.sigma) + ' L' + sx(ltMax) + ',' + sy(sc.line.intercept + sc.line.slope * ltMax - 0.674 * sc.line.sigma) + ' L' + sx(ltMin) + ',' + sy(sc.line.intercept + sc.line.slope * ltMin - 0.674 * sc.line.sigma) + ' Z';
+    svg.appendChild(el('path', { d: band, class: 'band' }));
+    svg.appendChild(el('line', { x1: sx(ltMin), y1: sy(sc.line.intercept + sc.line.slope * ltMin), x2: sx(ltMax), y2: sy(sc.line.intercept + sc.line.slope * ltMax), class: 'fitline' }));
+    sc.bins.forEach(function (b) {
+      svg.appendChild(el('line', { x1: sx(b.lt), y1: sy(b.p25), x2: sx(b.lt), y2: sy(b.p75), class: 'whisker' }));
+      svg.appendChild(el('circle', { cx: sx(b.lt), cy: sy(b.med), r: 4, class: 'bin' }));
+    });
+    document.getElementById('scatter').appendChild(svg);
+    document.getElementById('scatter-note').textContent = 'Each dot is the median traded market cap in a TVL decile (n=' + sc.bins[0].n + '–' + sc.bins[9].n + ' per bin); whiskers are the middle half of caps in the bin. The line is the fitted value curve; the band is its P25–P75 residual spread (±0.61 dex). Decile 2 sits above the line and decile 3 below it — the curve is smooth because the bins are noisy, not because the market is.';
     var nph = DATA.rows.map(function (r) { return r.net_per_hour_cc_usd; }).sort(function (a, b) { return a - b; });
     var be = DATA.rows.map(function (r) { return r.breakeven_odds; }).sort(function (a, b) { return a - b; });
     var nphMedian = nph[Math.floor(nph.length / 2)];
@@ -452,10 +474,11 @@
         el('div', null, el('span', { text: 'Chains' }), el('b', { class: 'num', text: String((row.chains || []).length) })),
         el('div', null, el('span', { text: 'Fitted log10 value' }), el('b', { class: 'num', text: rec.logImplied.toFixed(4) })),
         el('div', null, el('span', { text: 'P25–P75 range' }), el('b', { class: 'num', text: fmtUsd(row.implied_p25_usd) + ' – ' + fmtUsd(row.implied_p75_usd) })),
-        el('div', null, el('span', { text: 'Token odds (fitted model)' }), el('b', { class: 'num', text: Math.round(row.token_odds * 100) + '%' })),
+        el('div', null, el('span', { text: 'Token odds (rule model)' }), el('b', { class: 'num', text: Math.round(row.token_odds * 100) + '%' })),
         el('div', null, el('span', { text: 'Expected value (× 0.001% share)' }), el('b', { class: 'num', text: fmtMoney(row.expected_value_usd) })),
         el('div', { class: 'total' }, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
+      el('div', { class: 'equation' }, el('span', { text: 'Value equation' }), el('b', { class: 'num', text: '10^(' + DATA.fit.coefficients[0].toFixed(3) + ' + ' + DATA.fit.coefficients[1].toFixed(3) + ' × log10(' + fmtUsd(row.tvl_usd) + ')) = 10^' + rec.logImplied.toFixed(2) + ' = ' + fmtUsd(rec.implied) })),
       el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the page recomputes this row as ' + fmtUsd(rec.implied) + (rec.implied === row.implied_value_usd ? ' — the same number board.json carries.' : ' — which differs from the board: the data would be stale.') + ' The range is the fit\u2019s own residual spread (×/÷ ' + DATA.fit.range_factor.toFixed(2) + '). This is an estimate, not a price.' })
     ));
     var net25 = Math.round((row.implied_p25_usd * row.token_odds * 1e-5 - row.farm_cost_usd) * 100) / 100;

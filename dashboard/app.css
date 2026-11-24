@@ -204,3 +204,4 @@ tr.top3 .rank-num { color: var(--amber); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }
+.scatter-wrap{margin-top:12px}.scatter{width:100%;max-width:460px;height:auto;display:block}.scatter .band{fill:var(--accent);opacity:.18}.scatter .fitline{stroke:var(--accent);stroke-width:2}.scatter .whisker{stroke:var(--muted);stroke-width:2}.scatter .bin{fill:var(--accent)}
